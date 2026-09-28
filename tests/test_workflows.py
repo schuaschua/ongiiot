@@ -106,9 +106,9 @@ def test_ci_triggers_and_jobs(ci):
 
 
 def test_deploy_triggers(deploy):
+    # Deploys are manual only: starting the run is the approval for `poc`.
     on = triggers(deploy)
-    assert set(on) == {"push", "workflow_dispatch"}
-    assert on["push"] == {"branches": ["main"]}
+    assert set(on) == {"workflow_dispatch"}
     assert on["workflow_dispatch"]["inputs"]["stage"]["required"] is True
 
 
@@ -130,32 +130,30 @@ def test_deploy_resolve_has_no_aws(deploy):
         "environment": "${{ steps.out.outputs.environment }}",
     }
     (out,) = [s for s in resolve["steps"] if s.get("id") == "out"]
-    assert out["env"] == {"EVENT": "${{ github.event_name }}", "STAGE": "${{ inputs.stage }}"}
+    assert out["env"] == {"STAGE": "${{ inputs.stage }}"}
 
 
-def run_resolve(deploy: dict, event: str, stage: str, tmp_path: Path) -> dict[str, str]:
+def run_resolve(deploy: dict, stage: str, tmp_path: Path) -> dict[str, str]:
     (out,) = [s for s in deploy["jobs"]["resolve"]["steps"] if s.get("id") == "out"]
     output = tmp_path / "github_output"
     output.write_text("")
     subprocess.run(
         ["bash", "-e", "-c", out["run"]],
-        env={**os.environ, "EVENT": event, "STAGE": stage, "GITHUB_OUTPUT": str(output)},
+        env={**os.environ, "STAGE": stage, "GITHUB_OUTPUT": str(output)},
         check=True,
     )
     return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
 
 @pytest.mark.parametrize(
-    "event,stage,expected",
+    "stage,expected",
     [
-        ("push", "", {"stage": "poc", "environment": "poc"}),
-        # A push never reads the input, so even a stray value cannot change the target.
-        ("push", "poc-dj", {"stage": "poc", "environment": "poc"}),
-        ("workflow_dispatch", "poc-dj", {"stage": "poc-dj", "environment": "dev"}),
+        ("poc", {"stage": "poc", "environment": "poc"}),
+        ("poc-dj", {"stage": "poc-dj", "environment": "dev"}),
     ],
 )
-def test_resolve_outputs(deploy, tmp_path, event, stage, expected):
-    assert run_resolve(deploy, event, stage, tmp_path) == expected
+def test_resolve_outputs(deploy, tmp_path, stage, expected):
+    assert run_resolve(deploy, stage, tmp_path) == expected
 
 
 def test_deploy_job_wiring(deploy):
@@ -175,32 +173,36 @@ def test_deploy_job_wiring(deploy):
 
 def stage_check_code(deploy: dict) -> str:
     (step,) = [s for s in deploy["jobs"]["resolve"]["steps"] if s.get("name") == "Check dispatch stage"]
-    assert step["if"] == "github.event_name == 'workflow_dispatch'"
-    assert step["env"] == {"STAGE": "${{ inputs.stage }}"}
+    assert "if" not in step
+    assert step["env"] == {"STAGE": "${{ inputs.stage }}", "REF": "${{ github.ref }}"}
     argv = shlex.split(step["run"])
     assert argv[:4] == ["uv", "run", "python", "-c"]
     return argv[4]
 
 
 @pytest.mark.parametrize(
-    "stage,ok",
+    "stage,ref,ok",
     [
-        ("poc", False),
-        ("prod", False),
-        ("poc-DJ!", False),
-        ("poc-", False),
-        ("poc-dj!", False),
-        ("poc-" + "a" * 13, False),
-        ("poc-dj\n", False),
-        ("poc-" + "a" * 12, True),
-        ("poc-dj", True),
+        ("poc", "refs/heads/main", True),
+        ("poc", "refs/heads/feat/cicd", False),
+        ("poc", "refs/tags/main", False),
+        ("prod", "refs/heads/main", False),
+        ("poc\n", "refs/heads/main", False),
+        ("poc-DJ!", "refs/heads/feat/x", False),
+        ("poc-", "refs/heads/feat/x", False),
+        ("poc-dj!", "refs/heads/feat/x", False),
+        ("poc-" + "a" * 13, "refs/heads/feat/x", False),
+        ("poc-dj\n", "refs/heads/feat/x", False),
+        ("poc-" + "a" * 12, "refs/heads/feat/x", True),
+        ("poc-dj", "refs/heads/feat/x", True),
+        ("poc-dj", "refs/heads/main", True),
     ],
 )
-def test_dispatch_stage_check(deploy, stage, ok):
+def test_dispatch_stage_check(deploy, stage, ref, ok):
     code = stage_check_code(deploy)
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        env={**os.environ, "STAGE": stage, "PYTHONPATH": str(ROOT)},
+        env={**os.environ, "STAGE": stage, "REF": ref, "PYTHONPATH": str(ROOT)},
         cwd=ROOT,
         capture_output=True,
         text=True,

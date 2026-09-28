@@ -32,6 +32,7 @@ context:
 - `aud` must be `sts.amazonaws.com`. Decision (review pass 1, human): trust is scoped by environment, not repo-wide. The deploy role trusts only `sub` `repo:schuaschua/ongiiot:environment:poc` and `repo:schuaschua/ongiiot:environment:dev`. A separate diff role trusts only `repo:schuaschua/ongiiot:pull_request`.
 - The deploy role's permissions only let it assume the CDK bootstrap roles (`cdk-hnb659fds-*-123456789012-ap-southeast-1`) and read the bootstrap version parameter. The diff role may assume only the CDK lookup role (`cdk-hnb659fds-lookup-role-123456789012-ap-southeast-1`) and read the bootstrap version parameter. Neither gets direct resource permissions.
 - Decision (review pass 1, human): deploy.yml runs the test suite in its own job, and every deploy (`poc` and `dev`) needs it to pass before approval is requested or AWS is touched.
+- Decision (post-build, human, 2026-09-28): GitHub Team cannot require reviewers on private-repo environments (API 422). `poc` therefore deploys only by manual `workflow_dispatch` from `main`; starting the run is the approval. Nothing deploys on push. This replaces "deploys `poc` on push to `main`, gated by a GitHub environment approval" in the Approach.
 - Docs state the residual risk plainly: all stages share one account and one set of bootstrap roles, so a run holding `dev` credentials can technically reach `poc`. The `poc` approval is enforced for PRs and branch runs without an environment, not against an edited workflow on the `dev` path.
 - The `poc` stage deploys only from `main`, through the GitHub environment `poc`. Developer stages must match `poc-<initials>` (the `facility/model.py` stage rule) and use their own environment `dev`, which has no approval.
 - Workflows pin action major versions checked against their current releases, use `uv` from `uv.lock`, and pin the CDK CLI to one exact version.
@@ -49,7 +50,9 @@ context:
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
 | PR opened | any PR to `main` | the test, synth and `poc` diff jobs run; nothing deploys | the job fails on any error |
-| Merge to main | push to `main` | tests pass, then the deploy job waits for `poc` environment approval, then deploys `*-poc` | failing tests stop the run before approval; a failed deploy fails the run |
+| Merge to main | push to `main` | `ci.yml` runs; nothing deploys | none |
+| Manual poc deploy | dispatch `stage=poc` from `main` | tests pass, then deploys `*-poc` in environment `poc` | failing tests stop the run before AWS; a failed deploy fails the run |
+| poc from a branch | dispatch `stage=poc` from any ref but `main` | refused before any AWS call | the job fails with a message |
 | Branch or PR run without an environment | a job on any branch or PR asks for the deploy role | cannot assume the deploy role | AWS denies it |
 | PR diff | PR job assumes the diff role | can assume only the lookup role; `cdk diff` runs read-only | cannot assume the deploy role |
 | Manual dev deploy | dispatch with stage `poc-dj` | deploys `*-poc-dj` with no approval | no error |
@@ -101,6 +104,8 @@ context:
 ## Plan Change Log
 
 - **Pass 1 → intent_gap (A, B), resolved by the human.** Triggers: ECH-4/BH-1/IA-a/IA-b (repo-wide trust bypasses the `poc` gate; PR diff held deploy credentials) and ECH-2/BH-3 (deploy did not wait for tests). Amended: trust scoped to `environment:poc`/`environment:dev`, a read-only diff role for `pull_request` using `cdk diff --method template`, a `test` job gating `deploy`. Carried patches folded into tasks: `fullmatch` stage check plus extra cases (ECH-3), `resolve` outputs run under bash (VG-1), no "CI cannot change its own trust" claim (ECH-5), environments before the first merge (BH-14). Known-bad state avoided: any branch or PR can deploy `poc` without approval. KEEP: the pass-1 structure that worked (the `resolve` job with no AWS, input only through `env:`, folded `>-` scalar for the stage check, the test pulling the check code out of `deploy.yml`, `-c "stage=$STAGE"` quoting, the native OIDC provider, the `oidc` context gate in `infra/app.py`, the exact-policy template tests).
+
+- **Post-build → gate redesign, decided by the human.** Trigger: setting required reviewers on environment `poc` failed with HTTP 422 (the billing plan does not support it; the planning note "Team plan supports required reviewers" was wrong). Amended: `deploy.yml` is dispatch-only; `stage=poc` is accepted only from `refs/heads/main`; resolve maps `poc`→`poc`, else `dev`; tests, runbook and AD-16 updated. Known-bad state avoided: every merge to `main` deploying `poc` with no approval. KEEP: everything else from pass 2.
 
 ## Review Triage Log
 

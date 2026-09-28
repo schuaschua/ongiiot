@@ -210,11 +210,11 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
   - `infra/grafana_provision.py` installs the SiteWise plugin 2.6.3 and creates data source and dashboards through the Grafana HTTP API with a short-lived service-account token, after `cdk deploy`.
   - Deploys run only in GitHub Actions (`.github/workflows/deploy.yml`, runbook `docs/ci-cd.md`) through OIDC. GitHub holds no AWS keys.
   - Trust is scoped by GitHub environment, with exact `sub` matches. `ongiiot-github-deploy` is trusted only for `repo:schuaschua/ongiiot:environment:poc` and `…:environment:dev`, and can only assume the CDK bootstrap roles. `ongiiot-github-diff` is trusted only for `repo:schuaschua/ongiiot:pull_request`, and can only assume the read-only CDK lookup role.
-  - Every deploy runs the test suite first; the `deploy` job needs it to pass before approval is requested or AWS is touched.
-  - `poc` deploys only on push to `main`, after approval in the GitHub environment `poc`. `poc-<initials>` stages deploy by manual dispatch in the environment `dev`, with no approval. Each run deploys only `*-<stage>`, one run per stage at a time.
+  - Every deploy runs the test suite first; the `deploy` job needs it to pass before AWS is touched.
+  - Nothing deploys automatically. `poc` deploys only by manual dispatch from `main` in the GitHub environment `poc` (branch rule `main`); starting the run is the approval, because GitHub Team has no required reviewers for private repos. `poc-<initials>` stages deploy by manual dispatch from any branch in the environment `dev`. Each run deploys only `*-<stage>`, one run per stage at a time.
   - Pull requests run tests, `cdk synth` and a read-only `cdk diff --method template` against `poc` with the diff role, and never deploy.
   - `GitHubOidcStack` is outside every stage. It is deployed once, locally, with `-c oidc=true`.
-  - Residual risk: all stages share one account and one set of bootstrap roles, so a run holding `dev` credentials can technically reach `poc`. The `poc` approval is enforced against PRs and branch runs without an environment, not against an edited workflow on the `dev` path.
+  - Residual risk: all stages share one account and one set of bootstrap roles, so a run holding `dev` credentials can technically reach `poc`. The `main`-only rule for `poc` is enforced against PRs and branch runs without an environment, not against an edited workflow on the `dev` path. There is no second-person approval.
 
 ### AD-17 — IAM write boundaries
 
@@ -494,4 +494,4 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 | Can IAM Identity Center be enabled in the POC account for Grafana? | Day 0 with the account owner; fallback self-hosted Grafana with the same dashboards |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
 | Fargate for the simulator and 1 Hz per measurement hold? | Day 1; change is local to `sim/` and `infra/` |
-| Who are the required reviewers for the GitHub `poc` environment (AD-16)? | Before the first merge to `main` that deploys; set in repo settings per `docs/ci-cd.md` |
+| Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Before the demo; today anyone with write access can dispatch `poc` from `main` |
