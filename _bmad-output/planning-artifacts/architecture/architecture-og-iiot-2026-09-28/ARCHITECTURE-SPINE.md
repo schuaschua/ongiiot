@@ -206,8 +206,8 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Rule:**
   - `cdk deploy -c stage=<stage>`. Stages: `poc` (integration and demo) and `poc-<initials>` (one per developer). Every resource name is suffixed with the stage.
   - `alias_root` is `/lng1` for `poc` and `/<stage>/lng1` otherwise. `facility/model.py` applies it.
-  - One Grafana workspace, owned by the `poc` stage. Each stage provisions its own folder, data source and dashboards with uid `pipe-detail` (poc) or `pipe-detail-<initials>`. `DASHBOARD_UID`, `GRAFANA_URL` and `STAGE` reach the Lambda as CDK-set env vars.
-  - `infra/grafana_provision.py` installs the SiteWise plugin 2.6.3 and creates data source and dashboards through the Grafana HTTP API with a short-lived service-account token, after `cdk deploy`.
+  - One Grafana workspace, shared by all stages in `SharedGrafanaStack` (fixed name, like `SharedNetworkStack`; amended 2026-09-28, was "owned by the `poc` stage"). Any stage deploy creates or reuses it; deleting a stage leaves it in place. Each stage (`GrafanaStack-<stage>`) provisions its own folder `ongiiot-<stage>`, data source `sitewise-<stage>` and dashboards with uid `pipe-detail` / `facility-overview` (poc) or `pipe-detail-<initials>` / `facility-overview-<initials>`. `DASHBOARD_UID`, `GRAFANA_URL` and `STAGE` reach the Lambda as CDK-set env vars (stack outputs of `GrafanaStack-<stage>`).
+  - Provisioning runs **during** `cdk deploy` (amended 2026-09-28, was "after"): a custom resource (`infra/stacks/grafana_provision.py`, handler `infra/lambdas/grafana_provision/`) mints a service-account token of at most 15 minutes, pins the SiteWise plugin 2.6.3 (best effort; the running version is a stack output), upserts data source and dashboards through the Grafana HTTP API, and deletes the token. The CI deploy role and its trust are unchanged. Grafana access is assigned in code (`ADMIN_USER_IDS`, `grafana:UpdatePermissions`).
   - Deploys run only in GitHub Actions (`.github/workflows/deploy.yml`, runbook `docs/ci-cd.md`) through OIDC. GitHub holds no AWS keys.
   - Trust is scoped by GitHub environment, with exact `sub` matches. `ongiiot-github-deploy` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:environment:poc` and `…:environment:dev`, and can only assume the CDK bootstrap roles. `ongiiot-github-diff` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:pull_request`, and can only assume the read-only CDK lookup role.
   - Every deploy runs the test suite first; the `deploy` job needs it to pass before AWS is touched.
@@ -388,7 +388,7 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 | Amazon SNS (operator topic, team-alarms topic) | managed service |
 | Amazon ECS on Fargate (simulator, one task, 0.25 vCPU / 0.5 GB, X86_64) | managed service |
 | uv (simulator image build, `ghcr.io/astral-sh/uv`) | 0.12.19 |
-| AWS IAM Identity Center (Grafana login) `[ASSUMPTION]` | managed service |
+| AWS IAM Identity Center (Grafana login; organization instance in `us-east-1`) | managed service |
 | GitHub Actions with AWS OIDC (`GitHubOidcStack`, roles `ongiiot-github-deploy` and `ongiiot-github-diff`) | managed service |
 | AWS CDK CLI (CI, `npx aws-cdk@…`) | 2.1143.0 |
 | Node.js (CI, for the CDK CLI) | 22 |
@@ -454,7 +454,7 @@ detect/core/detectors/     # one module per detector id (AD-5)
 detect/adapters/           # reader, derived_writer, incidents, notifier, deeplink (AD-6, AD-7, AD-8, AD-13, AD-18)
 detect/handler.py          # Lambda entry point, two-pass run (AD-5, AD-12)
 ops/                       # inject.py, reset.py, smoke.py (AD-15)
-infra/                     # CDK app per stage, grafana_provision.py (AD-10, AD-16, AD-17)
+infra/                     # CDK app per stage; shared network and Grafana stacks; Grafana provisioning custom resource (AD-10, AD-16, AD-17)
 dashboards/                # facility-overview.json, pipe-detail.json (AD-8)
 tests/                     # detector units, test_layers, test_deeplink_contract, alias-guard tests
 .github/workflows/         # ci.yml (PR gate), deploy.yml (poc on main, dev stages by dispatch) (AD-16)
@@ -482,7 +482,7 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 - **Data diode, customer-held keys, production hardening:** next phase per spec non-goals.
 - **CI/CD beyond the POC:** GitHub Actions with OIDC deploys `poc` and developer stages (AD-16). Deferred: per-stage bootstrap isolation (separate qualifiers or accounts, so `dev` credentials cannot reach `poc`), a `prod` stage, multi-account promotion, and signed build artifacts. Revisit before any environment beyond POC.
 - **Storage tiers, retention and cost controls:** SiteWise default retention kept. Revisit before any run longer than the POC.
-- **Teardown:** `cdk destroy` per stage after removing the Grafana data source. Revisit at POC close.
+- **Teardown:** `cdk destroy` per stage; `GrafanaStack-<stage>` removes its own folder, dashboards and data source. `SharedGrafanaStack` and `SharedNetworkStack` are deleted separately at POC close.
 - **Grafana access beyond IAM Identity Center users for the team:** POC only.
 - **CUSUM / slow-leak detectors:** roadmap; would be new detector IDs behind AD-5.
 
@@ -492,7 +492,7 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 | --- | --- |
 | ~~Can SiteWise IAM scope `BatchPutAssetPropertyValue` by alias prefix (AD-17)?~~ Resolved 2026-09-28: no; grants are scoped to pipe asset ARNs and the code guard is the boundary | AWS service authorization reference |
 | ExecuteQuery latency at full load within the 50 s timeout (AD-18)? | Day 1 reader spike; switch to BatchGet fallback if not |
-| Can IAM Identity Center be enabled in the POC account for Grafana? | Day 0 with the account owner; fallback self-hosted Grafana with the same dashboards |
+| ~~Can IAM Identity Center be enabled in the POC account for Grafana?~~ **Resolved 2026-09-28:** yes, the organization instance `ssoins-7223813109c6d7dd` (`us-east-1`) is enabled; the workspace (`ap-southeast-1`) uses `AWS_SSO`. Cross-region sign-in is confirmed on the first live `poc-dj` deploy; if it fails, fall back to self-hosted Grafana with the same dashboards and record it here | First `poc-dj` deploy of Story 1.5 |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
 | ~~Does 1 Hz per measurement hold on Fargate, and do alias writes succeed with grants on pipe asset ARNs?~~ **Resolved 2026-09-28 (first `poc-dj` deploy):** 1 Hz holds (60 GOOD values per 60 s, no gaps; all 144 aliases fresh). Asset ARNs alone are not enough: alias-addressed writes are authorised against the time series, so the seed Lambda and simulator task also hold `time-series/*` (AD-17). | Done |
 | Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Before the demo; today anyone with write access can dispatch `poc` from `main` |

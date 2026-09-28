@@ -1,0 +1,458 @@
+{
+  "uid": "pipe-detail",
+  "title": "Pipe detail (__STAGE__)",
+  "tags": [
+    "ongiiot",
+    "__STAGE__"
+  ],
+  "description": "Raw SiteWise trends of one pipe by alias (AD-8, UX-DR2). Provisioned by GrafanaStack-__STAGE__; edits are overwritten on deploy.",
+  "editable": false,
+  "schemaVersion": 41,
+  "timezone": "utc",
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "pipe_id",
+        "label": "Pipe ID (P-xxx)",
+        "query": "P-001",
+        "current": {
+          "text": "P-001",
+          "value": "P-001"
+        },
+        "hide": 0
+      },
+      {
+        "type": "textbox",
+        "name": "area",
+        "label": "Area",
+        "query": "train1",
+        "current": {
+          "text": "train1",
+          "value": "train1"
+        },
+        "hide": 0
+      },
+      {
+        "type": "constant",
+        "name": "alias_root",
+        "query": "__ALIAS_ROOT__",
+        "hide": 2
+      },
+      {
+        "type": "custom",
+        "name": "evidence",
+        "label": "Evidence",
+        "multi": true,
+        "includeAll": false,
+        "allowCustomValue": true,
+        "query": "pressure_in : ${alias_root}/${area}/${pipe_id}/pressure_in,pressure_out : ${alias_root}/${area}/${pipe_id}/pressure_out,flow_in : ${alias_root}/${area}/${pipe_id}/flow_in,flow_out : ${alias_root}/${area}/${pipe_id}/flow_out,temperature : ${alias_root}/${area}/${pipe_id}/temperature,methane_ppm : ${alias_root}/${area}/${pipe_id}/methane_ppm",
+        "current": {
+          "text": [],
+          "value": []
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Evidence",
+      "collapsed": false,
+      "id": 1,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 2,
+      "title": "Evidence: ${evidence}",
+      "description": "One highlighted raw trend per selected evidence alias (AD-8). Empty when no evidence is selected.",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "repeat": "evidence",
+      "repeatDirection": "h",
+      "maxPerRow": 3,
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 3,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "evidence",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${evidence}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Raw trends: ${pipe_id} (${area})",
+      "collapsed": false,
+      "id": 3,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "pressure_in",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: Pa",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "pressure_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/pressure_in"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "pressure_out",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: Pa",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "pressure_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/pressure_out"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "flow_in",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: kg/s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "flow_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/flow_in"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "flow_out",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: kg/s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "flow_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/flow_out"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "temperature",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: K",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "temperature",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/temperature"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "methane_ppm",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: ppmv",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "methane_ppm",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValueHistory",
+          "region": "default",
+          "propertyAlias": "${alias_root}/${area}/${pipe_id}/methane_ppm"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "type": "link",
+      "title": "Facility overview",
+      "url": "/d/facility-overview__UID_SUFFIX__/facility-overview?${__url_time_range}",
+      "icon": "dashboard"
+    }
+  ]
+}

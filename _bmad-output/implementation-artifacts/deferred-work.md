@@ -28,3 +28,12 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-1-4-simulator-fargate.md`
   summary: Update the architecture `.memlog.md` CI/CD entries (poc now deploys by manual dispatch from main; no reviewer gate) and add the Story 1.4 decisions (Fargate, IAM cannot scope by alias, on/off switch).
   evidence: The memlog still records "merge to main deploys poc" and "reviewer approval" as ADOPTED.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-5-grafana.md`
+  summary: Addressed (Story 1.5) the Grafana provisioning entry from plan-cicd-github-actions.md — provisioning now runs during `cdk deploy` as a custom resource (`GrafanaStack-<stage>`), so deploy.yml needs no extra step and the CI deploy role needs no Grafana permissions.
+  evidence: infra/stacks/grafana_provision.py, infra/lambdas/grafana_provision/handler.py; AD-16 amended 2026-09-28.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-5-grafana.md`
+  summary: Revoke Grafana admins removed from ADMIN_USER_IDS on update (diff old vs new list in a small Lambda-backed custom resource).
+  evidence: The AwsCustomResource update path only issues ADD; removal currently needs a manual `aws grafana update-permissions` REVOKE (documented).
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-5-grafana.md`
+  summary: Test service-account lookup pagination in the Grafana provisioning handler with a paging fake.
+  evidence: `_find_service_account` follows nextToken, but the fake never pages; fine at POC scale.

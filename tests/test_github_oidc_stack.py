@@ -128,6 +128,8 @@ def test_absent_without_oidc_context():
         "SharedNetworkStack",
         "SiteWiseAssetsStack-poc",
         "SimulatorStack-poc",
+        "SharedGrafanaStack",
+        "GrafanaStack-poc",
     }
     assert "GitHubOidcStack" not in stack_names(build_app(cdk.App(context={"oidc": "false"})))
 
@@ -139,5 +141,7 @@ def test_present_with_oidc_context(flag):
         "SharedNetworkStack",
         "SiteWiseAssetsStack-poc-dj",
         "SimulatorStack-poc-dj",
+        "SharedGrafanaStack",
+        "GrafanaStack-poc-dj",
         "GitHubOidcStack",
     }
