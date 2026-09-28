@@ -44,11 +44,11 @@ BOOTSTRAP_LOOKUP = f"arn:aws:iam::{ACCOUNT}:role/cdk-hnb659fds-lookup-role-{ACCO
 HOST = "token.actions.githubusercontent.com"
 ROLES = {
     "ongiiot-github-deploy": {
-        "sub": ["repo:schuaschua/ongiiot:environment:poc", "repo:schuaschua/ongiiot:environment:dev"],
+        "sub": ["repo:schuaschua@83538399/ongiiot@1392670803:environment:poc", "repo:schuaschua@83538399/ongiiot@1392670803:environment:dev"],
         "assume": BOOTSTRAP_ROLES,
     },
     "ongiiot-github-diff": {
-        "sub": ["repo:schuaschua/ongiiot:pull_request"],
+        "sub": ["repo:schuaschua@83538399/ongiiot@1392670803:pull_request"],
         "assume": BOOTSTRAP_LOOKUP,
     },
 }

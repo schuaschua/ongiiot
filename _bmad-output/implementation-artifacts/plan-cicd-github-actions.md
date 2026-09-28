@@ -107,6 +107,8 @@ context:
 
 - **Post-build → gate redesign, decided by the human.** Trigger: setting required reviewers on environment `poc` failed with HTTP 422 (the billing plan does not support it; the planning note "Team plan supports required reviewers" was wrong). Amended: `deploy.yml` is dispatch-only; `stage=poc` is accepted only from `refs/heads/main`; resolve maps `poc`→`poc`, else `dev`; tests, runbook and AD-16 updated. Known-bad state avoided: every merge to `main` deploying `poc` with no approval. KEEP: everything else from pass 2.
 
+- **Post-build → OIDC subject format.** Trigger: the first real PR run failed `AssumeRoleWithWebIdentity`; the repo uses GitHub's immutable subject (`use_immutable_subject: true`), so `sub` is `repo:schuaschua@83538399/ongiiot@1392670803:…`. Amended: trust subjects use that prefix (same repo and scopes; stricter, since IDs survive renames and do not match a recreated repo). Also pinned `astral-sh/setup-uv@v10.2.0`, because setup-uv publishes no floating `v10` tag.
+
 ## Review Triage Log
 
 **Pass 1 (review_loop_iteration 0 → 1).** Counts: high 5, medium 11, low 11, false 3, maybe-false 0. Outcome: two intent_gap entries, so the code is reverted (the diff is kept at `.work/diff-cicd.patch`) and the human is asked.

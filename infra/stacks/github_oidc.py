@@ -25,8 +25,12 @@ GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com"
 GITHUB_OIDC_HOST = "token.actions.githubusercontent.com"
 AUDIENCE = "sts.amazonaws.com"
 REPO = "schuaschua/ongiiot"
-DEPLOY_SUBS = [f"repo:{REPO}:environment:poc", f"repo:{REPO}:environment:dev"]
-DIFF_SUBS = [f"repo:{REPO}:pull_request"]
+# The repo uses GitHub's immutable OIDC subject: owner and repo carry their numeric IDs
+# (`gh api repos/schuaschua/ongiiot/actions/oidc/customization/sub`), so a recreated
+# repo with the same name does not match.
+SUB_PREFIX = "repo:schuaschua@83538399/ongiiot@1392670803"
+DEPLOY_SUBS = [f"{SUB_PREFIX}:environment:poc", f"{SUB_PREFIX}:environment:dev"]
+DIFF_SUBS = [f"{SUB_PREFIX}:pull_request"]
 DEPLOY_ROLE_NAME = "ongiiot-github-deploy"
 DIFF_ROLE_NAME = "ongiiot-github-diff"
 BOOTSTRAP_QUALIFIER = "hnb659fds"
