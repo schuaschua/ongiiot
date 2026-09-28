@@ -4,3 +4,6 @@
 - source_plan: none
   summary: Run the day-1 spikes — ExecuteQuery latency at full load, IAM alias-prefix write scoping, and IAM Identity Center for Amazon Managed Grafana — and record the outcomes against AD-17, AD-18 and the Grafana fallback.
   evidence: Split from the day-1 build intent; the spikes need the asset stack and simulator stream deployed to produce meaningful results.
+- source_plan: `_bmad-output/implementation-artifacts/plan-facility-model-sitewise.md`
+  summary: Verify on the first real deploy that the seed Lambda's BatchPutAssetPropertyValue grant on pipe asset ARNs authorises writes addressed by propertyAlias (else add the time-series resource type).
+  evidence: maybe-false, high if true (the seed and the stack would fail with AccessDenied). A real deploy of stage poc-dj, or AWS IAM docs for the iotsitewise time-series resource type, would settle it. This is the spine's AD-17 open question.
