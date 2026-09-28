@@ -9,9 +9,13 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    the no-sample gap rule (one ``dq_gap`` finding per empty alias).
 4. Pass 2: the ``leak_*`` detectors (``leak_mass_balance``: pipe; ``leak_methane_rise``: facility) on the
    dq-annotated window (``PipeMeta.dq`` filled); they exclude sensors with ``dq < tunables.dq_min``.
-   Their findings go to the summary line only (incidents and email come with Stories 3.3 and 3.4).
+   Their findings go to the summary line only (incidents and email come with Stories 3.3 and 3.4). If any
+   pass-1 detector failed, its sensors would wrongly score 1.0, so pass 2 is skipped for that run (an ERROR
+   line and ``pass2_skipped: true``).
 5. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
-6. Log one JSON summary line, with ``findings: [{detector, pipe, confidence}]`` for pass 2.
+6. Log one JSON summary line, with pass 2's ``findings: [{detector, pipe, confidence, explanation,
+   evidence_aliases}]``, ``suppressed: [{detector, pipe, reason}]`` (a required sensor untrusted) and
+   ``pass2_skipped``.
 
 Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
 ``reader.DEFAULT_STRATEGY``),
@@ -135,12 +139,14 @@ def run(
     # Pass 1: dq_* detectors (AD-5), then dq_score owns the score (AD-13).
     findings: list[Finding] = []
     ran_ok: list[str] = []
+    pass1_failed: list[str] = []
     for det in detectors:
         # A detector's findings count only if it completed on every pipe and all are well formed.
         try:
             own = _run_detector(det, fw, tunables)
         except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
             log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
+            pass1_failed.append(det.id)
             continue
         findings += own
         ran_ok.append(det.id)
@@ -152,14 +158,31 @@ def run(
     fw = FacilityWindow(pipes=pipes, window=fw.window)
 
     # Pass 2: leak_* detectors on the dq-annotated window, with the same isolation (AD-5).
+    # A failed pass-1 detector leaves its sensors at 1.0 (trusted), so pass 2 could trust a railed sensor.
     leaks: list[Finding] = []
-    for det in pass2:
+    suppressed: list[dict[str, str]] = []
+    pass2_skipped = bool(pass1_failed) and bool(pass2)
+    if pass2_skipped:
+        log(
+            json.dumps(
+                {
+                    "stage": f.stage,
+                    "run_id": run_id,
+                    "level": "ERROR",
+                    "error": "pass 2 skipped: pass-1 detector(s) failed",
+                    "failed": pass1_failed,
+                }
+            )
+        )
+    for det in () if pass2_skipped else pass2:
         try:
             own = _run_detector(det, fw, tunables, check=check_pass2_finding)
+            check_pass2_set(det, own)
         except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
             log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
             continue
         leaks += own
+        suppressed += _suppressed(det, fw, tunables)
         ran_ok.append(det.id)
 
     values: dict[str, float | str] = {}
@@ -185,7 +208,18 @@ def run(
         "values_written": written,
         "detectors": {d.id: d.version for d in (*detectors, *pass2)},
         "ran_ok": ran_ok,
-        "findings": [{"detector": x.detector_id, "pipe": x.pipe_id, "confidence": x.confidence} for x in leaks],
+        "findings": [
+            {
+                "detector": x.detector_id,
+                "pipe": x.pipe_id,
+                "confidence": round(x.confidence, 3),
+                "explanation": x.explanation,
+                "evidence_aliases": list(x.evidence_aliases),
+            }
+            for x in leaks
+        ],
+        "suppressed": suppressed,
+        "pass2_skipped": pass2_skipped,
         "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
@@ -205,6 +239,48 @@ def check_pass2_finding(finding: Finding, known_aliases: Sequence[str]) -> None:
         raise ValueError(f"{finding.detector_id}: evidence {finding.evidence_aliases} is not an expected alias set of the pipe")
     if not isinstance(finding.explanation, str) or not finding.explanation.strip():
         raise ValueError(f"{finding.detector_id}: empty explanation")
+
+
+def check_pass2_set(det: Detector, found: Sequence[Finding]) -> None:
+    """Raise ``ValueError`` unless every finding carries ``det.id`` and no pipe is named twice."""
+    seen: set[str] = set()
+    for x in found:
+        if x.detector_id != det.id:
+            raise ValueError(f"{det.id}: finding carries detector_id {x.detector_id!r}")
+        if x.pipe_id in seen:
+            raise ValueError(f"{det.id}: more than one finding for {x.pipe_id}")
+        seen.add(x.pipe_id)
+
+
+def check_passes(pass1: Sequence[Detector], pass2: Sequence[Detector], tunables: Tunables) -> None:
+    """Cold start: both passes together (ids unique across passes, kinds, tunables); pass 1 holds only
+    ``dq_*`` ids and pass 2 none (a ``dq_*`` id in pass 2 would collide with the dq score's namespace)."""
+    check_detectors((*pass1, *pass2), tunables)
+    for det in pass1:
+        if not str(getattr(det, "id", "")).startswith(dq_score.DQ_PREFIX):
+            raise ValueError(f"pass-1 detector {getattr(det, 'id', det)!r} must have a dq_* id")
+    for det in pass2:
+        if str(getattr(det, "id", "")).startswith(dq_score.DQ_PREFIX):
+            raise ValueError(f"pass-2 detector {det.id!r} must not have a dq_* id")
+
+
+def _suppressed(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[dict[str, str]]:
+    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (``dq < dq_min``)."""
+    floor = tunables["dq_min"]
+    out = []
+    for pid in sorted(fw.pipes):
+        p = fw.pipes[pid]
+        reasons = []
+        for m in getattr(det, "requires", ()):
+            if m not in p.aliases:
+                continue
+            d = p.dq.get(m)
+            if d is None or not d >= floor:
+                shown = "none" if d is None else f"{d:.2f}"
+                reasons.append(f"{m} untrusted (dq {shown} < dq_min {floor:g})")
+        if reasons:
+            out.append({"detector": det.id, "pipe": pid, "reason": "; ".join(reasons)})
+    return out
 
 
 def _run_detector(
@@ -256,7 +332,7 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None) -> Runtime:
         if not stage:
             raise ValueError("STAGE is not set")
         facility = load(env.get("FACILITY_PATH") or DEFAULT_PATH, stage=stage)
-        check_detectors((*PASS1_DETECTORS, *PASS2_DETECTORS), facility.tunables)
+        check_passes(PASS1_DETECTORS, PASS2_DETECTORS, facility.tunables)
         if client is None:
             import boto3
             from botocore.config import Config

@@ -1,9 +1,11 @@
 """``leak_mass_balance``: mass going missing between the pipe's inlet and outlet (AD-5 pass 2, FR4).
 
-A pipe detector. For every whole second in the trailing ``[window_end - avg_s, window_end)`` where both
-``flow_in`` (> 0) and ``flow_out`` have a GOOD value, the loss fraction is ``(flow_in - flow_out) /
-flow_in``; ``frac`` is its mean. Confidence ``0`` below ``min_frac``, else ``min(1, frac / full_frac)``.
-No finding with fewer than ``min_points`` paired seconds.
+A pipe detector. Over the whole seconds in the trailing ``[window_end - avg_s, window_end)`` where both
+``flow_in`` and ``flow_out`` have a finite GOOD value, ``frac = sum(flow_in - flow_out) / sum(flow_in)``
+(a ratio of sums, so a single near-zero ``flow_in`` reading cannot blow it up). Confidence ``0`` below
+``min_frac``, else ``min(1, frac / full_frac)``. No finding with fewer than ``min_points`` paired seconds,
+when the mean ``flow_in`` is below ``contract min + min_flow_frac x span`` (a pipe barely flowing, or
+negative flow), or when the ``flow_in`` and ``flow_out`` contract units differ.
 
 Required sensors: ``flow_in`` and ``flow_out``. If either is untrusted (``dq < tunables.dq_min``) there
 is no finding. A ``pressure_out`` drop is corroboration only. It is measured against ``pressure_in``
@@ -11,10 +13,11 @@ is no finding. A ``pressure_out`` drop is corroboration only. It is measured aga
 (paired by second) over the trailing ``avg_s`` against its mean over the rest of the window. A relative
 drop of at least ``pressure_drop_frac`` is cited in the explanation and both pressure aliases join
 ``evidence_aliases``. If ``pressure_out`` (or its reference ``pressure_in``) is untrusted, the
-explanation names the excluded sensor. Confidence never depends on the pressures.
+explanation names the excluded sensor (an untrusted ``pressure_out`` is named even without
+``pressure_in``). Confidence never depends on the pressures.
 
 Tunables (``tunables.detectors.leak_mass_balance``): ``avg_s``, ``min_points``, ``min_frac``,
-``full_frac``, ``pressure_drop_frac``; plus ``tunables.dq_min``.
+``full_frac``, ``pressure_drop_frac``, ``min_flow_frac``; plus ``tunables.dq_min``.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from detect.core.detectors._pass2 import check_avg_tunables, dq_min, dq_of, good
 from detect.core.models import Finding, PipeWindow, Tunables
 
 ID = "leak_mass_balance"
-KEYS = ("min_frac", "full_frac", "pressure_drop_frac")
+KEYS = ("min_frac", "full_frac", "pressure_drop_frac", "min_flow_frac")
 REQUIRED = ("flow_in", "flow_out")
 CORROBORATING = "pressure_out"
 REFERENCE = "pressure_in"
@@ -36,6 +39,7 @@ class LeakMassBalance:
     id = ID
     version = "1"
     kind: Literal["pipe"] = "pipe"
+    requires = REQUIRED  # the handler reports a pipe as suppressed when one is untrusted
 
     def check_tunables(self, t: Tunables) -> None:
         mine = check_avg_tunables(t, ID, KEYS)
@@ -43,6 +47,8 @@ class LeakMassBalance:
             raise ValueError(f"tunables.detectors.{ID}: need 0 < min_frac <= full_frac <= 1")
         if not 0 < mine["pressure_drop_frac"] < 1:
             raise ValueError(f"tunables.detectors.{ID}.pressure_drop_frac must be in (0, 1)")
+        if not 0 <= mine["min_flow_frac"] < 1:
+            raise ValueError(f"tunables.detectors.{ID}.min_flow_frac must be in [0, 1)")
 
     def detect(self, pw: PipeWindow, t: Tunables) -> list[Finding]:
         mine = t["detectors"][ID]
@@ -50,30 +56,37 @@ class LeakMassBalance:
         p, w = pw.pipe, pw.window
         if not all(trusted(p, m, floor) for m in REQUIRED):
             return []
+        c_in, c_out = p.contracts.get("flow_in"), p.contracts.get("flow_out")
+        if c_in is None or c_out is None or c_in.unit != c_out.unit:
+            return []
         end_s = w.end.timestamp()
         lo_s = end_s - mine["avg_s"]
         f_in = good_by_second(w.series.get(p.aliases["flow_in"], []), lo_s, end_s)
         f_out = good_by_second(w.series.get(p.aliases["flow_out"], []), lo_s, end_s)
-        pairs = [(f_in[s], f_out[s]) for s in sorted(f_in.keys() & f_out.keys()) if f_in[s] > 0]
+        pairs = [(f_in[s], f_out[s]) for s in sorted(f_in.keys() & f_out.keys())]
         if len(pairs) < mine["min_points"]:
             return []
-        frac = sum((i - o) / i for i, o in pairs) / len(pairs)
-        lost = sum(i - o for i, o in pairs) / len(pairs)
-        if not (math.isfinite(frac) and math.isfinite(lost)) or frac < mine["min_frac"]:
+        total_in = math.fsum(i for i, _ in pairs)
+        lost = math.fsum(i - o for i, o in pairs) / len(pairs)
+        min_flow = c_in.min + mine["min_flow_frac"] * (c_in.max - c_in.min)
+        if not (math.isfinite(total_in) and math.isfinite(lost)) or total_in <= 0 or total_in / len(pairs) < min_flow:
+            return []
+        frac = lost * len(pairs) / total_in
+        if not math.isfinite(frac) or frac < mine["min_frac"]:
             return []
         c = min(1.0, frac / mine["full_frac"])
 
         evidence = [p.aliases["flow_in"], p.aliases["flow_out"]]
-        unit = p.contracts["flow_in"].unit if "flow_in" in p.contracts else ""
+        unit = c_in.unit
         lost_s = f"{lost:.3g} {unit}".rstrip()
         sentence = (
             f"flow_out is {frac * 100:.1f}% below flow_in ({lost_s} missing) on average over the last "
             f"{mine['avg_s']:g} s"
         )
-        if CORROBORATING in p.aliases and REFERENCE in p.aliases:
-            if not trusted(p, CORROBORATING, floor):
-                sentence += f"; {untrusted_note(CORROBORATING, dq_of(p, CORROBORATING), floor)}"
-            elif not trusted(p, REFERENCE, floor):
+        if CORROBORATING in p.aliases and not trusted(p, CORROBORATING, floor):
+            sentence += f"; {untrusted_note(CORROBORATING, dq_of(p, CORROBORATING), floor)}"
+        elif CORROBORATING in p.aliases and REFERENCE in p.aliases:
+            if not trusted(p, REFERENCE, floor):
                 sentence += (
                     f"; pressure_out was not checked because {untrusted_note(REFERENCE, dq_of(p, REFERENCE), floor)}"
                 )
@@ -106,7 +119,8 @@ class LeakMassBalance:
         def ratios(a: float, b: float) -> list[float]:
             p_out = good_by_second(w.series.get(aliases[CORROBORATING], []), a, b)
             p_in = good_by_second(w.series.get(aliases[REFERENCE], []), a, b)
-            return [p_out[s] / p_in[s] for s in p_out.keys() & p_in.keys() if p_in[s] > 0]
+            out = [p_out[s] / p_in[s] for s in p_out.keys() & p_in.keys() if p_in[s] > 0]
+            return [r for r in out if math.isfinite(r)]
 
         before = ratios(w.start.timestamp(), lo_s)
         after = ratios(lo_s, end_s)

@@ -3,12 +3,12 @@ title: 'Story 3.1: Detect leaks from mass balance and methane rise'
 type: 'feature'
 ticket: 'OG-14'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: '8ade86cdf574f66b244de4f08664cd9d1f4efae7'
 context:
@@ -102,12 +102,40 @@ context:
   - `avg_s` 60 is what makes "within two runs" hold with margin: a longer average dilutes a new leak; shorter adds noise for nothing (normal is already far below the thresholds).
 - **Tests:** `tests/test_leak_detectors.py` (synthetic rows, confidence ramps, trust and exclusion rules, peers, window-end exclusivity, and the physics rows: 4 x 30 consecutive normal runs at different times of day and seeds, two-run timing, Leak/Isolation, every peer group, Untrusted flow and Untrusted corroboration with the simulator's `dq_flatline`), plus handler tests (summary findings, pass 2 sees the annotated dq, isolation, 7 malformed-finding cases, tunables at cold start). The handler tests' synthetic `live_store` now gives every pipe the same background methane (contract mid-ranges differ: P-022's methane max is 20000, which would read as a leak).
 - Calibration scripts lived in `.work/` (gitignored).
+- **Review fixes (2026-09-29):**
+  - Pass 2 is skipped (ERROR line, `pass2_skipped: true`) when any pass-1 detector fails, since its sensors would wrongly score 1.0.
+  - `leak_mass_balance` uses the ratio of sums `sum(in - out) / sum(in)`, and a new tunable `min_flow_frac: 0.01` of the `flow_in` contract span suppresses barely flowing or negative-flow pipes. The lowest simulated baseline is 2.9% of span (flare headers), which leaves a 3x margin. Calibrated values are unchanged, and all calibration tests still pass.
+  - Both checks give no finding when the compared units differ.
+  - An untrusted `pressure_out` is named even without `pressure_in`. Sparse methane peers are named ("had too little data").
+  - `check_pass2_set` enforces `detector_id == det.id` and one finding per (detector, pipe). `check_passes` at cold start requires pass-1 ids to be `dq_*` and pass-2 ids not to be, on top of cross-pass id uniqueness.
+  - `check_avg_tunables` validates `window_len_s` and requires `window_len_s - avg_s >= min_points`.
+  - Summary findings carry `explanation` and `evidence_aliases`, with confidence rounded to 3 decimals. A new `suppressed: [{detector, pipe, reason}]` list comes from each detector's `requires`.
 
 ## Plan Change Log
 
+- 2026-09-29 (review): `leak_mass_balance` uses the ratio of sums, not the mean of per-second ratios, and gains `min_flow_frac`. The summary gains `explanation`, `evidence_aliases`, `suppressed` and `pass2_skipped`. Pass 2 is skipped when pass 1 fails.
 - 2026-09-29: `leak_*` tunables gain `min_points` (both) and `leak_mass_balance.pressure_drop_frac` (the corroboration threshold); the frozen confidence formulas are unchanged. The `pressure_out` corroboration is measured relative to `pressure_in` (evidence in Implementation Notes).
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 1, medium 6, low 14, false 0. Outcome: 10 patch groups, no deferrals, no loopback. The high finding is resolved by an autonomous decision (pass 2 skipped when pass 1 fails).
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| BH-1, ECH-7 | A pass-1 failure leaves sensors at 1.0, trusted by pass 2 (false leak) | high | patch + decision | Skip pass 2 with an ERROR and `pass2_skipped`. |
+| BH-2, ECH-1 | Near-zero `flow_in` makes the ratio blow up | medium | patch | Ratio of sums, a `min_flow_frac` guard, non-finite values ignored. |
+| BH-8, IA-2, ECH-12 | Summary lacks explanation and evidence; suppressed checks invisible | medium | patch | Explanation, evidence, rounded confidence and a `suppressed` list. |
+| IA-1 | No handler-level positive leak test | medium | patch | Test added. |
+| VG-1 | Pipe-kind malformed pass-2 finding untested | medium | patch | Parametrized test. |
+| VG-2 | Pressure baseline `min_points` guard untested | medium | patch | Test added. |
+| BH-4, ECH-10 | `detector_id` mismatch, duplicate findings, id collisions | low | patch | Validated. |
+| BH-3, ECH-2, ECH-8 | Unit mismatch not checked | low | patch | Skip when units differ. |
+| BH-5, ECH-3, BH-7, ECH-9 | Untrusted or dataless sensors not named | low | patch | Named in the explanation. |
+| BH-6, ECH-5 | Tunables validation gaps | low | patch | Checks added. |
+| BH-9 | Docs: hard-coded stage; unclear cadence | low | patch | Fixed. |
+| ECH-4 | `rate_hz` versus `min_points` | low | reject | Every contract is 1 Hz. |
+| ECH-6 | `dq_min` = 0 makes exclusion a no-op | low | reject | Model range [0, 1]; 0 is a legitimate "trust all". |
+| ECH-11 | Methane check is facility-kind | low | reject | The plan permits either kind. |
 
 ## Verification
 

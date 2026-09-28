@@ -4,7 +4,7 @@ railed and stuck sensors end to end (Story 2.2), and drifting and silent sensors
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -399,6 +399,7 @@ def _without(tunables, detector_id, key):
         ("leak_mass_balance", "min_frac"),
         ("leak_mass_balance", "full_frac"),
         ("leak_mass_balance", "pressure_drop_frac"),
+        ("leak_mass_balance", "min_flow_frac"),
         ("leak_mass_balance", None),
         ("leak_methane_rise", "avg_s"),
         ("leak_methane_rise", "min_points"),
@@ -461,6 +462,9 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("leak_methane_rise", {"min_ppm": 400}),  # above full_ppm
         ("leak_methane_rise", {"full_ppm": float("inf")}),
         ("leak_methane_rise", {"min_points": True}),
+        ("leak_mass_balance", {"min_flow_frac": 1.0}),
+        ("leak_mass_balance", {"min_flow_frac": -0.1}),
+        ("leak_methane_rise", {"avg_s": 880, "min_points": 30}),  # 20 s left for a 30-point baseline
     ],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
@@ -488,6 +492,7 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
         "min_frac": 0.02,
         "full_frac": 0.08,
         "pressure_drop_frac": 0.006,
+        "min_flow_frac": 0.01,
     }
     assert dict(facility.tunables["detectors"]["leak_methane_rise"]) == {"avg_s": 60, "min_points": 30, "min_ppm": 30, "full_ppm": 300}
     assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
@@ -602,10 +607,16 @@ def test_pass2_registers_the_leak_detectors():
 def test_leak_findings_reach_the_summary(facility):
     fake = FakeSiteWise(leak_store(facility), page=20000)
     summary, logs = run(facility, fake)
-    assert summary["findings"] == [
-        {"detector": "leak_mass_balance", "pipe": "P-007", "confidence": 1.0},
-        {"detector": "leak_methane_rise", "pipe": "P-007", "confidence": 1.0},
+    assert [(f["detector"], f["pipe"], f["confidence"]) for f in summary["findings"]] == [
+        ("leak_mass_balance", "P-007", 1.0),
+        ("leak_methane_rise", "P-007", 1.0),
     ]
+    mb, mr = summary["findings"]
+    a = lambda m: facility.alias("P-007", m)  # noqa: E731
+    assert mb["evidence_aliases"] == [a("flow_in"), a("flow_out"), a("pressure_in"), a("pressure_out")]
+    assert mr["evidence_aliases"] == [a("methane_ppm")]
+    assert "below flow_in" in mb["explanation"] and "above the median" in mr["explanation"]
+    assert summary["suppressed"] == [] and summary["pass2_skipped"] is False
     assert summary["ran_ok"] == ALL_IDS and len(logs) == 1
     assert json.loads(logs[0])["findings"] == summary["findings"]
     # Pass 2 writes nothing: every sensor keeps full trust.
@@ -622,7 +633,10 @@ def test_untrusted_flow_out_blocks_only_the_mass_balance(facility):
     fake = FakeSiteWise(store, page=20000)
     summary, _ = run(facility, fake)
     assert written(facility, fake)[("P-007", "flow_out")] == (0.0, "dq_flatline")
-    assert summary["findings"] == [{"detector": "leak_methane_rise", "pipe": "P-007", "confidence": 1.0}]
+    assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [("leak_methane_rise", "P-007")]
+    assert summary["suppressed"] == [
+        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)"}
+    ]
 
 
 class SeesDq:
@@ -664,8 +678,17 @@ def test_pass2_failure_is_isolated(facility):
     assert set(written(facility, fake).values()) == {(1.0, "")}
 
 
-def _finding(facility, pipe_id, aliases, c=0.9, explanation="x.", detector_id="leak_fake"):
-    return lambda fw: [Finding(detector_id, "1", pipe_id, tuple(aliases), fw.window.start, fw.window.end, c, explanation)]
+def _finding(facility, pipe_id, aliases, c=0.9, explanation="x.", detector_id="leak_fake", n=1):
+    return lambda fw: [Finding(detector_id, "1", pipe_id, tuple(aliases), fw.window.start, fw.window.end, c, explanation)] * n
+
+
+class PipeSeesDq(SeesDq):
+    """``SeesDq`` as a pipe detector: returns ``findings(pw)`` only in P-007's window."""
+
+    kind = "pipe"
+
+    def detect(self, pw, t):
+        return self.findings(pw) if pw.pipe.pipe_id == "P-007" else []
 
 
 @pytest.mark.parametrize(
@@ -678,9 +701,12 @@ def _finding(facility, pipe_id, aliases, c=0.9, explanation="x.", detector_id="l
         ("empty_explanation", "explanation"),
         ("unknown_pipe", "unknown pipe"),
         ("dq_id", "dq_"),
+        ("other_id", "carries detector_id"),
+        ("duplicate", "more than one finding"),
     ],
 )
-def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match):
+@pytest.mark.parametrize("kind", ["pipe", "facility"])
+def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match, kind):
     p7, p8 = facility.alias("P-007", "flow_in"), facility.alias("P-008", "flow_in")
     bad = {
         "foreign_alias": _finding(facility, "P-007", [p7, p8]),
@@ -690,9 +716,14 @@ def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match)
         "empty_explanation": _finding(facility, "P-007", [p7], explanation=" "),
         "unknown_pipe": _finding(facility, "P-999", [p7]),
         "dq_id": _finding(facility, "P-007", [p7], detector_id="dq_sneaky"),
+        "other_id": _finding(facility, "P-007", [p7], detector_id="leak_mass_balance"),
+        "duplicate": _finding(facility, "P-007", [p7], n=2),
     }[case]
+    if kind == "pipe" and case in ("unknown_pipe",):
+        match = "from the window of P-007"  # a pipe detector naming another pipe
     fake = FakeSiteWise(leak_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, handler.PASS1_DETECTORS, pass2=[SeesDq(bad), *handler.PASS2_DETECTORS])
+    det = PipeSeesDq(bad) if kind == "pipe" else SeesDq(bad)
+    summary, logs = run_with(facility, fake, handler.PASS1_DETECTORS, pass2=[det, *handler.PASS2_DETECTORS])
     assert summary["ran_ok"] == ALL_IDS
     assert [f["pipe"] for f in summary["findings"]] == ["P-007", "P-007"]
     err = json.loads(logs[0])
@@ -704,3 +735,80 @@ def test_duplicate_ids_across_passes_fail_the_cold_start(facility):
 
     with pytest.raises(ValueError, match="duplicate detector ids.*leak_mass_balance"):
         handler.check_detectors([*handler.PASS1_DETECTORS, *handler.PASS2_DETECTORS, LeakMassBalance()], facility.tunables)
+
+
+def test_pass1_failure_skips_pass2(facility):
+    """A failed dq_* detector leaves its sensors at 1.0, so pass 2 must not trust them: skipped, with an ERROR line."""
+
+    class Boom:
+        id, version, kind = "dq_boom", "1", "pipe"
+
+        def detect(self, pw, t):
+            raise RuntimeError("boom")
+
+    fake = FakeSiteWise(leak_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [*handler.PASS1_DETECTORS, Boom()], pass2=handler.PASS2_DETECTORS)
+    assert summary["pass2_skipped"] is True and summary["findings"] == [] and summary["suppressed"] == []
+    assert summary["ran_ok"] == ALL_IDS[:4]
+    err = json.loads(logs[1])
+    assert err["level"] == "ERROR" and err["error"] == "pass 2 skipped: pass-1 detector(s) failed" and err["failed"] == ["dq_boom"]
+    assert json.loads(logs[-1]) == summary and len(logs) == 3
+
+
+def test_pass2_ids_must_not_collide_with_pass1(facility):
+    from detect.core.detectors import DqGap
+
+    class DqNamed:
+        id, version, kind = "dq_leak", "1", "pipe"
+
+        def check_tunables(self, t):
+            pass
+
+    with pytest.raises(ValueError, match="duplicate detector ids.*dq_gap"):
+        handler.check_passes(handler.PASS1_DETECTORS, [DqGap()], facility.tunables)
+    with pytest.raises(ValueError, match="must not have a dq_"):
+        handler.check_passes(handler.PASS1_DETECTORS, [DqNamed()], facility.tunables)
+    with pytest.raises(ValueError, match="must have a dq_"):
+        handler.check_passes(handler.PASS2_DETECTORS, [], facility.tunables)
+    handler.check_passes(handler.PASS1_DETECTORS, handler.PASS2_DETECTORS, facility.tunables)
+
+
+@pytest.mark.parametrize("bad", [None, "900"])
+def test_leak_tunables_need_a_numeric_window_len(facility, bad):
+    tunables = {**facility.tunables, "window_len_s": bad}
+    for det in handler.PASS2_DETECTORS:
+        with pytest.raises(ValueError, match="window_len_s"):
+            handler.check_detectors([det], tunables)
+
+
+def test_simulated_default_leak_on_p007_end_to_end(facility):
+    """handler.run over real simulator output (a default leak on P-007 for the last 2 minutes of the window):
+    both findings in the summary with explanation and evidence, nothing elsewhere, nothing suppressed."""
+    from facility.control import new_injection
+    from sim import physics
+
+    end = int(END.timestamp())
+    s = datetime.fromtimestamp(end - 120, UTC)
+    leak = new_injection("leak-P-007", "leak", "P-007", s, s + timedelta(minutes=30), params={}, facility=facility)
+    store = {}
+    for pipe in facility.pipes:
+        state = physics.initial_state(pipe, 0)
+        acts = [physics.activate(state, leak)] if pipe.id == "P-007" else []
+        for t in range(end - 900 - 120, end + 30):
+            now = datetime.fromtimestamp(t, UTC)
+            state, samples = physics.step(state, t, [a for a in acts if leak.active_at(now)])
+            for x in samples:
+                store.setdefault(facility.alias(pipe.id, x.measurement), []).append((t, x.value, x.quality))
+    fake = FakeSiteWise(store, page=20000)
+    summary, logs = run(facility, fake)
+    assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [
+        ("leak_mass_balance", "P-007"),
+        ("leak_methane_rise", "P-007"),
+    ]
+    mb, mr = summary["findings"]
+    assert min(mb["confidence"], mr["confidence"]) >= 0.8
+    assert mb["evidence_aliases"][:2] == [facility.alias("P-007", "flow_in"), facility.alias("P-007", "flow_out")]
+    assert mr["evidence_aliases"] == [facility.alias("P-007", "methane_ppm")]
+    assert mb["explanation"].startswith("flow_out is ") and "peer pipes" in mr["explanation"]
+    assert summary["suppressed"] == [] and summary["pass2_skipped"] is False and len(logs) == 1
+    assert set(written(facility, fake).values()) == {(1.0, "")}

@@ -23,12 +23,18 @@ def dq_min(t: Tunables) -> float:
 
 
 def check_avg_tunables(t: Tunables, detector_id: str, extra: Sequence[str]) -> Mapping[str, Any]:
-    """Validate ``0 < avg_s < window_len_s``, whole ``1 <= min_points <= avg_s``, ``dq_min``, plus ``extra`` numbers."""
+    """Validate ``0 < avg_s``, whole ``1 <= min_points <= avg_s``, ``window_len_s - avg_s >= min_points`` (room
+    for a baseline before the trailing span), ``dq_min``, plus ``extra`` numbers."""
     mine = own_tunables(t, detector_id, ("avg_s", "min_points", *extra))
-    if not 0 < mine["avg_s"] < t["window_len_s"]:
+    wl = t.get("window_len_s") if isinstance(t, Mapping) else None
+    if isinstance(wl, bool) or not isinstance(wl, (int, float)) or not math.isfinite(wl):
+        raise ValueError(f"tunables.window_len_s must be a finite number, got {wl!r} (needed by {detector_id})")
+    if not 0 < mine["avg_s"] < wl:
         raise ValueError(f"tunables.detectors.{detector_id}.avg_s must be > 0 and < window_len_s")
     if not float(mine["min_points"]).is_integer() or not 1 <= mine["min_points"] <= mine["avg_s"]:
         raise ValueError(f"tunables.detectors.{detector_id}.min_points must be a whole number, >= 1 and <= avg_s")
+    if wl - mine["avg_s"] < mine["min_points"]:
+        raise ValueError(f"tunables.detectors.{detector_id}: window_len_s - avg_s must leave at least min_points seconds")
     dq_min(t)
     return mine
 

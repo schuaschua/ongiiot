@@ -392,3 +392,79 @@ def test_untrusted_corroboration_during_a_leak():
     assert mb.confidence >= 0.8
     assert "pressure_out was excluded as untrusted (dq 0.00 < dq_min 0.5)" in mb.explanation
     assert METAS["P-007"].aliases["pressure_out"] not in mb.evidence_aliases
+
+
+# -- review fixes ------------------------------------------------------------------------------------
+
+
+def _pipe_with(pipe_id, **changes):
+    """METAS with ``pipe_id``'s PipeMeta changed (aliases / contracts)."""
+    return {**METAS, pipe_id: replace(METAS[pipe_id], **changes)}
+
+
+def test_near_zero_flow_gives_no_mass_balance():
+    """A pipe barely flowing: one tiny flow_in reading must not blow up the loss fraction."""
+    fw = synthetic({("P-007", "flow_in"): lambda i: 0.01, ("P-007", "flow_out"): lambda i: 0.0})
+    assert MB.detect(pipe_window(trusted(fw), "P-007"), T) == []
+    # One near-zero flow_in second among normal ones: ratio of sums, no false 100% loss.
+    fw = synthetic({("P-007", "flow_in"): lambda i: 1e-9 if i == N - 5 else 20.0, ("P-007", "flow_out"): lambda i: 0.0 if i == N - 5 else 20.0})
+    assert MB.detect(pipe_window(trusted(fw), "P-007"), T) == []
+
+
+def test_negative_flow_gives_no_mass_balance():
+    fw = synthetic({("P-007", "flow_in"): lambda i: -20.0, ("P-007", "flow_out"): lambda i: -25.0})
+    assert MB.detect(pipe_window(trusted(fw), "P-007"), T) == []
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_flow_values_are_ignored(bad):
+    fw = synthetic({("P-007", "flow_out"): lambda i: bad if i % 2 else 20.0})
+    assert MB.detect(pipe_window(trusted(fw), "P-007"), T) == []
+    (f,) = MB.detect(pipe_window(trusted(synthetic({("P-007", "flow_out"): lambda i: bad if i % 2 else 18.0})), "P-007"), T)
+    assert f.confidence == 1.0 and "nan" not in f.explanation and "inf" not in f.explanation
+
+
+def test_mismatched_flow_units_give_no_mass_balance():
+    p = METAS["P-007"]
+    contracts = {**p.contracts, "flow_out": replace(p.contracts["flow_out"], unit="t/h")}
+    fw = leaking()
+    fw = trusted(FacilityWindow(pipes=_pipe_with("P-007", contracts=MappingProxyType(contracts)), window=fw.window))
+    assert MB.detect(pipe_window(fw, "P-007"), T) == []
+
+
+def test_mismatched_peer_methane_unit_gives_no_methane_finding():
+    peer = next(pid for pid, p in METAS.items() if p.peer_group == METAS["P-007"].peer_group and pid != "P-007")
+    q = METAS[peer]
+    contracts = {**q.contracts, "methane_ppm": replace(q.contracts["methane_ppm"], unit="mg/m3")}
+    fw = leaking()
+    fw = trusted(FacilityWindow(pipes=_pipe_with(peer, contracts=MappingProxyType(contracts)), window=fw.window))
+    assert MR.detect(fw, T) == []
+
+
+def test_untrusted_pressure_out_is_named_without_pressure_in():
+    p = METAS["P-007"]
+    aliases = {m: a for m, a in p.aliases.items() if m != "pressure_in"}
+    fw = leaking()
+    fw = trusted(FacilityWindow(pipes=_pipe_with("P-007", aliases=MappingProxyType(aliases)), window=fw.window), {("P-007", "pressure_out"): 0.1})
+    (f,) = MB.detect(pipe_window(fw, "P-007"), T)
+    assert "pressure_out was excluded as untrusted (dq 0.10 < dq_min 0.5)" in f.explanation
+
+
+def test_peers_with_too_little_data_are_named():
+    group = sorted(pid for pid, p in METAS.items() if p.peer_group == METAS["P-007"].peer_group and pid != "P-007")
+    fw = leaking()
+    series = dict(fw.window.series)
+    series[METAS[group[2]].aliases["methane_ppm"]] = series[METAS[group[2]].aliases["methane_ppm"]][:-60]
+    (f,) = MR.detect(trusted(FacilityWindow(fw.pipes, Window(fw.window.start, fw.window.end, series))), T)
+    assert f.explanation.endswith(f"median of its 4 peer pipes ({group[2]} had too little data).")
+
+
+def test_pressure_baseline_too_short_is_not_cited():
+    """Fewer than min_points pressure samples before the trailing span: finding with the two flow aliases only."""
+    fw = leaking()
+    a = METAS["P-007"].aliases
+    series = dict(fw.window.series)
+    for m in ("pressure_in", "pressure_out"):
+        series[a[m]] = series[a[m]][-(60 + int(T["detectors"]["leak_mass_balance"]["min_points"]) - 1) :]
+    (f,) = MB.detect(pipe_window(trusted(FacilityWindow(fw.pipes, Window(fw.window.start, fw.window.end, series))), "P-007"), T)
+    assert f.evidence_aliases == (a["flow_in"], a["flow_out"]) and "pressure" not in f.explanation

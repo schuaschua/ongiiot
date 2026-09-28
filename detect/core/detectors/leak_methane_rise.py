@@ -7,7 +7,9 @@ its ``peer_group`` (``PipeMeta.peer_group``). Confidence ``0`` below ``min_ppm``
 ``min(1, excess / full_ppm)``. No finding with fewer than 2 usable peers.
 
 Required sensor: the pipe's own ``methane_ppm``; if untrusted (``dq < tunables.dq_min``) there is no
-finding. A peer whose ``methane_ppm`` is untrusted is left out of the median and named in the explanation.
+finding. A peer whose ``methane_ppm`` is untrusted, or trusted but with fewer than ``min_points`` samples,
+is left out of the median and named in the explanation. No finding if any compared peer's
+``methane_ppm`` contract unit differs from the pipe's own.
 
 Tunables (``tunables.detectors.leak_methane_rise``): ``avg_s``, ``min_points``, ``min_ppm``,
 ``full_ppm``; plus ``tunables.dq_min``.
@@ -33,6 +35,7 @@ class LeakMethaneRise:
     id = ID
     version = "1"
     kind: Literal["facility"] = "facility"
+    requires = (M,)  # required sensors: the handler reports a pipe as suppressed when one is untrusted
 
     def check_tunables(self, t: Tunables) -> None:
         mine = check_avg_tunables(t, ID, KEYS)
@@ -67,6 +70,13 @@ class LeakMethaneRise:
                 peers = [v for pid, v in means.items() if pid != p.pipe_id and v is not None]
                 if len(peers) < MIN_PEERS:
                     continue
+                own_unit = p.contracts[M].unit if M in p.contracts else None
+                if any(
+                    (q.contracts[M].unit if M in q.contracts else None) != own_unit
+                    for q in with_sensor
+                    if q.pipe_id != p.pipe_id and means.get(q.pipe_id) is not None
+                ):
+                    continue
                 ref = median(peers)
                 excess = mean - ref
                 if not math.isfinite(excess) or excess < mine["min_ppm"]:
@@ -78,9 +88,15 @@ class LeakMethaneRise:
                     f"methane_ppm averaged {mean:.3g}{u} over the last {mine['avg_s']:g} s, "
                     f"{excess:.3g}{u} above the median of its {len(peers)} peer pipes"
                 )
+                notes = []
                 skipped = sorted(untrusted - {p.pipe_id})
                 if skipped:
-                    sentence += f" ({', '.join(skipped)} excluded as untrusted, dq < dq_min {floor:g})"
+                    notes.append(f"{', '.join(skipped)} excluded as untrusted, dq < dq_min {floor:g}")
+                sparse = sorted(pid for pid, v in means.items() if pid != p.pipe_id and v is None)
+                if sparse:
+                    notes.append(f"{', '.join(sparse)} had too little data")
+                if notes:
+                    sentence += f" ({'; '.join(notes)})"
                 out.append(
                     Finding(
                         detector_id=ID,
