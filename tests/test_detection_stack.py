@@ -211,3 +211,40 @@ def test_two_stages_do_not_collide():
         return out
 
     assert len(names(a)) == 3 and not names(a) & names(b)
+
+
+def _image_hashes(monkeypatch, root) -> tuple[str, str]:
+    """(simulator image hash, detection image hash) for an app built from ``root``."""
+    import re
+
+    monkeypatch.setattr(simulator, "REPO_ROOT", root)
+    monkeypatch.setattr(detection, "REPO_ROOT", root)
+    app = build_app(cdk.App(context={"stage": "poc-dj"}))
+
+    def image_hash(stack_name: str) -> str:
+        tpl = json.dumps(Template.from_stack(app.node.find_child(stack_name)).to_json())
+        (h,) = set(re.findall(r":([0-9a-f]{64})", tpl))
+        return h
+
+    return image_hash("SimulatorStack-poc-dj"), image_hash("DetectionStack-poc-dj")
+
+
+def test_image_hashes_are_independent(tmp_path, monkeypatch):
+    import shutil
+    from pathlib import Path
+
+    src = Path(detection.__file__).resolve().parent.parent.parent
+    root = tmp_path / "repo"
+    root.mkdir()
+    for f in ("pyproject.toml", "uv.lock", ".dockerignore"):
+        shutil.copy(src / f, root / f)
+    for d in ("facility", "sim", "detect"):
+        shutil.copytree(src / d, root / d, ignore=shutil.ignore_patterns("__pycache__"))
+
+    sim0, det0 = _image_hashes(monkeypatch, root)
+    (root / "detect" / "handler.py").write_text((root / "detect" / "handler.py").read_text() + "\n# change\n")
+    sim1, det1 = _image_hashes(monkeypatch, root)
+    assert sim1 == sim0 and det1 != det0
+    (root / "sim" / "main.py").write_text((root / "sim" / "main.py").read_text() + "\n# change\n")
+    sim2, det2 = _image_hashes(monkeypatch, root)
+    assert sim2 != sim1 and det2 == det1

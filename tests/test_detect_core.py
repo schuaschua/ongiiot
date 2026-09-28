@@ -72,6 +72,11 @@ def test_confidence_is_clamped():
     assert dq_score.score([finding("dq_flatline", -0.2)]) == (1.0, "dq_flatline")
 
 
+@pytest.mark.parametrize("c", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_confidence_counts_as_one(c):
+    assert dq_score.score([finding("dq_drift", c), finding("dq_stuck", 0.2)]) == (0.0, "dq_drift,dq_stuck")
+
+
 def fw(series):
     pipes = {
         "P-001": PipeMeta("P-001", "train1", "s", "m", 1, "g", {"flow_in": "/a/P-001/flow_in", "flow_out": "/a/P-001/flow_out"}, {}),

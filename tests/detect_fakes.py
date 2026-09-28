@@ -100,8 +100,10 @@ class FakeSiteWiseRead:
 class FakeSiteWiseWrite:
     """Records ``batch_put_asset_property_value`` calls; the latest value per (alias, timestamp) wins."""
 
-    def __init__(self, throttle_first: int = 0, entry_error: str | None = None):
+    def __init__(self, throttle_first: int = 0, entry_error: str | None = None, fail_once=(), fail_once_code="ThrottlingException"):
         self.calls: list[list[dict]] = []
+        self.fail_once = set(fail_once)  # aliases whose entry fails (fail_once_code) the first time only
+        self.fail_once_code = fail_once_code
         self.throttle_first = throttle_first
         self.entry_error = entry_error
         self.stored: dict[tuple[str, int], dict] = {}
@@ -117,10 +119,19 @@ class FakeSiteWiseWrite:
                     {"entryId": entries[0]["entryId"], "errors": [{"errorCode": self.entry_error, "errorMessage": "x"}]}
                 ]
             }
+        failed = [e for e in entries if e["propertyAlias"] in self.fail_once]
+        self.fail_once -= {e["propertyAlias"] for e in failed}
         for e in entries:
+            if e in failed:
+                continue
             for v in e["propertyValues"]:
                 self.stored[(e["propertyAlias"], v["timestamp"]["timeInSeconds"])] = v["value"]
-        return {"errorEntries": []}
+        return {
+            "errorEntries": [
+                {"entryId": e["entryId"], "errors": [{"errorCode": self.fail_once_code, "errorMessage": "x"}]}
+                for e in failed
+            ]
+        }
 
 
 class FakeSiteWise(FakeSiteWiseRead, FakeSiteWiseWrite):

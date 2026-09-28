@@ -10,6 +10,7 @@ import pytest
 from detect import handler
 from detect.adapters.derived_writer import DerivedWriter
 from detect.adapters.reader import make_reader
+from detect.core.models import Finding
 from facility.model import DEFAULT_PATH, load
 from tests.detect_fakes import FakeSiteWise
 
@@ -84,7 +85,7 @@ def test_normal_run(facility, strategy):
     assert summary["reader_strategy"] == strategy
     assert summary["aliases_no_data"] == [] and summary["values_written"] == 288
     assert summary["samples"] == 144 * 900
-    assert {"read_duration_s", "detectors", "ran_ok"} <= set(summary)
+    assert {"read_duration_s", "detectors", "ran_ok", "run_s"} <= set(summary)
 
 
 def test_no_data(facility):
@@ -132,6 +133,75 @@ def test_detector_failure_is_logged_and_skipped(facility):
     assert set(written(facility, fake).values()) == {(1.0, "")}
 
 
+class DqOn:
+    """Fake pass-1 detector: a dq_* finding with confidence ``c`` on one (pipe, measurement)."""
+
+    id, version = "dq_fake", "1"
+
+    def __init__(self, facility, pipe_id, measurement, c):
+        self.alias = facility.alias(pipe_id, measurement)
+        self.pipe_id, self.c = pipe_id, c
+        self.seen: dict[str, set[str]] = {}
+
+    def detect(self, pw, t):
+        self.seen[pw.pipe.pipe_id] = set(pw.window.series)
+        if pw.pipe.pipe_id != self.pipe_id:
+            return []
+        return [Finding(self.id, self.version, self.pipe_id, (self.alias,), pw.window.start, pw.window.end, self.c, "x.")]
+
+
+def run_with(facility, fake, detectors):
+    logs = []
+    rt = runtime(facility, fake)
+    summary = handler.run(rt, handler.parse_scheduled_time({"scheduled_time": SCHEDULED}), detectors=detectors, log=logs.append)
+    return summary, logs
+
+
+def test_detector_findings_reach_written_scores(facility):
+    det = DqOn(facility, "P-007", "flow_in", 0.3)
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, _ = run_with(facility, fake, [det])
+    values = written(facility, fake)
+    assert values[("P-007", "flow_in")] == (pytest.approx(0.7), "dq_fake")
+    assert sum(v == (1.0, "") for v in values.values()) == 143
+    assert summary["ran_ok"] == ["dq_fake"]
+    # Each pipe sees only its own aliases.
+    assert det.seen == {p.id: {facility.alias(p.id, m) for m in p.sensors} for p in facility.pipes}
+
+
+def test_detector_failing_on_a_later_pipe_contributes_nothing(facility):
+    last = facility.pipes[-1].id
+
+    class LateBoom(DqOn):
+        def detect(self, pw, t):
+            if pw.pipe.pipe_id == last:
+                raise RuntimeError("boom")
+            return super().detect(pw, t)
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [LateBoom(facility, facility.pipes[0].id, facility.pipes[0].sensors[0], 0.9)])
+    assert set(written(facility, fake).values()) == {(1.0, "")}
+    assert summary["ran_ok"] == [] and json.loads(logs[0])["detector_id"] == "dq_fake"
+
+
+def test_malformed_dq_finding_skips_only_that_detector(facility):
+    p0, p1 = facility.pipes[0], facility.pipes[1]
+
+    class Foreign(DqOn):
+        def detect(self, pw, t):  # names another pipe's alias
+            return [Finding(self.id, "1", pw.pipe.pipe_id, (facility.alias(p1.id, p1.sensors[0]),), pw.window.start, pw.window.end, 0.5, "x.")] if pw.pipe.pipe_id == p0.id else []
+
+    good = DqOn(facility, p0.id, p0.sensors[0], 0.25)
+    good.id = "dq_good"
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [Foreign(facility, p0.id, p0.sensors[0], 0.5), good])
+    assert summary["ran_ok"] == ["dq_good"]
+    values = written(facility, fake)
+    assert values[(p0.id, p0.sensors[0])] == (pytest.approx(0.75), "dq_good")
+    assert values[(p1.id, p1.sensors[0])] == (1.0, "")
+    assert "not an expected alias" in json.loads(logs[0])["error"]
+
+
 def test_adapter_failure_fails_the_invocation(facility):
     fake = FakeSiteWise({})
     fake.fail = "ThrottlingException"
@@ -161,7 +231,7 @@ def test_handler_entry_point(facility, monkeypatch):
     fake = FakeSiteWise(live_store(facility), page=20000)
     monkeypatch.setattr(handler, "_RUNTIME", None)
     rt = handler.runtime({"STAGE": STAGE}, client=fake)
-    assert rt.reader.strategy == handler.DEFAULT_READER_STRATEGY == "batch_get"
+    assert rt.reader.strategy == handler.DEFAULT_STRATEGY == "batch_get"
     assert handler.runtime({"STAGE": "poc"}) is rt  # cached per cold start
     summary = handler.handler({"scheduled_time": SCHEDULED})
     assert summary["values_written"] == 288
@@ -171,6 +241,20 @@ def test_handler_entry_point(facility, monkeypatch):
     with pytest.raises(ValueError, match="STAGE"):
         handler.runtime({}, client=fake)
     monkeypatch.setattr(handler, "_RUNTIME", None)
+
+
+def test_write_client_has_no_sdk_retries(monkeypatch):
+    import boto3
+
+    made = []
+    monkeypatch.setattr(boto3, "client", lambda service, config=None, **kw: made.append(config) or object())
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    rt = handler.runtime({"STAGE": STAGE})
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    attempts = [c.retries["max_attempts"] for c in made]
+    assert sorted(attempts) == [1, 3]
+    write_config = made[attempts.index(1)]
+    assert rt.writer._client is not rt.reader._client and write_config.retries["mode"] == "standard"
 
 
 def test_pipe_metas_match_the_model(facility):

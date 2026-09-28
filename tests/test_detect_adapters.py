@@ -99,10 +99,33 @@ def test_execute_query_statement_and_prefix_cached():
     r.read(ps, START, END)
     r.read(ps, START, END)
     q = fake.queries[0]["queryStatement"]
-    assert "FROM raw_time_series" in q and f"LIKE '{ROOT}/train%'" in q
+    assert "FROM raw_time_series" in q and f"LIKE '{ROOT}/%'" in q
     assert "event_timestamp >= TIMESTAMP '2026-09-28 12:18:00'" in q and "event_timestamp < TIMESTAMP '2026-09-28 12:33:00'" in q
     assert len(r._prefixes) == 1
     assert any(c["nextToken"] for c in fake.queries)
+
+
+@pytest.mark.parametrize(
+    ("aliases", "prefix"),
+    [
+        (("/poc-dj/lng1/train1/P-001/flow_in", "/poc-dj/lng1/train2/P-002/flow_in"), "/poc-dj/lng1/"),
+        (("/poc-dj/lng1/a", "/poc-dj2/lng1/a"), "/"),  # never ends mid-segment
+        (("/poc-dj/lng1/train1/P-001/flow_in",), "/poc-dj/lng1/train1/P-001/"),
+    ],
+)
+def test_execute_query_prefix_ends_at_a_segment(aliases, prefix):
+    assert ExecuteQueryReader(None)._prefix(aliases) == prefix
+
+
+def test_execute_query_ignores_sibling_stage_with_longer_name():
+    ps = {"P-001": PipeMeta("P-001", "a", "s", "m", 1, "g", {"flow_in": "/poc-dj/x/flow_in", "flow_out": "/poc-dj/x/flow_out"}, {})}
+    store = full_store(ps)
+    store["/poc-dj/x/flow_inx"] = [(S0 + 1, 9.0, "GOOD")]
+    store["/poc-dj2/x/flow_in"] = [(S0 + 1, 9.0, "GOOD")]
+    fake = FakeSiteWiseRead(store, page=5000)
+    fw = ExecuteQueryReader(fake).read(ps, START, END)
+    assert "LIKE '/poc-dj/x/%'" in fake.queries[0]["queryStatement"]
+    assert fw == BatchGetReader(FakeSiteWiseRead(store, page=5000)).read(ps, START, END)
 
 
 @pytest.mark.parametrize("cls", READERS)
@@ -131,7 +154,7 @@ def test_naive_or_empty_window_refused(cls):
 def test_make_reader():
     assert make_reader("execute_query", None).strategy == "execute_query"
     assert make_reader("batch_get", None).strategy == "batch_get"
-    assert make_reader(None, None).strategy == reader.DEFAULT_STRATEGY
+    assert make_reader(None, None).strategy == reader.DEFAULT_STRATEGY == "batch_get"
     with pytest.raises(ValueError, match="READER_STRATEGY"):
         make_reader("athena", None)
 
@@ -195,6 +218,19 @@ def test_writer_retries_throttling_then_raises_on_errors():
         DerivedWriter(FakeSiteWiseWrite(entry_error="InvalidRequestException"), sleep=sleeps.append).write({DQ: 0.5}, END)
     with pytest.raises(WriteError):
         DerivedWriter(FakeSiteWiseWrite(throttle_first=99), sleep=sleeps.append).write({DQ: 0.5}, END)
+
+
+def test_writer_resends_only_failed_entries():
+    values = {f"{ROOT}/train1/P-{i:03d}/derived/flow_in_dq": 1.0 - i / 100 for i in range(1, 8)}
+    flaky = [f"{ROOT}/train1/P-002/derived/flow_in_dq", f"{ROOT}/train1/P-005/derived/flow_in_dq"]
+    fake = FakeSiteWiseWrite(fail_once=flaky)
+    sleeps = []
+    assert DerivedWriter(fake, sleep=sleeps.append).write(values, END) == 7
+    first, retry = fake.calls
+    assert len(first) == 7 and len(sleeps) == 1
+    failed_ids = {e["entryId"] for e in first if e["propertyAlias"] in flaky}
+    assert {e["entryId"] for e in retry} == failed_ids and len(retry) == 2
+    assert {a: v["doubleValue"] for (a, _), v in fake.stored.items()} == values
 
 
 @pytest.mark.parametrize("bad", [float("nan"), True, None])

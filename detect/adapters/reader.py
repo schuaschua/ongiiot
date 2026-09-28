@@ -2,7 +2,8 @@
 
 ``read(pipes, start, end) -> FacilityWindow`` returns raw samples for ``[start, end)`` with every
 expected raw alias present (an empty list when there is no data), samples ascending by time.
-Two strategies share that contract; ``READER_STRATEGY`` picks one (``make_reader``):
+Two strategies share that contract; ``READER_STRATEGY`` picks one (``make_reader``; default
+``DEFAULT_STRATEGY``, ``batch_get``):
 
 - ``execute_query``: SiteWise ``ExecuteQuery`` on ``raw_time_series``, filtered by the aliases'
   common prefix and ``event_timestamp``, paged.
@@ -25,7 +26,7 @@ from typing import Any, Protocol
 from detect.core.models import QUALITIES, FacilityWindow, PipeMeta, Sample, Window
 
 STRATEGIES = ("execute_query", "batch_get")
-DEFAULT_STRATEGY = "execute_query"
+DEFAULT_STRATEGY = "batch_get"  # AD-18 spike (2026-09-29): the only default; handler and stack import it
 BATCH_GET_ENTRIES = 16  # BatchGetAssetPropertyValueHistory entries per request
 BATCH_GET_MAX_RESULTS = 20000  # values per page
 QUERY_MAX_RESULTS = 20000  # rows per page
@@ -123,7 +124,8 @@ class ExecuteQueryReader:
 
     A long ``property_alias IN (...)`` list is not used: in the spike (2026-09-29) SiteWise returned
     samples for only a subset of a 144-alias ``IN`` list. The prefix is the longest common string
-    prefix of the expected aliases (no alias parsing, AD-1); rows for any other alias under it,
+    prefix of the expected aliases, trimmed to its last ``/`` so it never ends mid-segment
+    (``/poc-dj`` would also match ``/poc-dj2/...``); no alias parsing (AD-1). Rows for any other alias under it,
     such as ``derived/`` ones, are dropped here.
     """
 
@@ -145,7 +147,8 @@ class ExecuteQueryReader:
 
     def _prefix(self, aliases: tuple[str, ...]) -> str:
         if aliases not in self._prefixes:
-            self._prefixes[aliases] = os.path.commonprefix(list(aliases))
+            common = os.path.commonprefix(list(aliases))
+            self._prefixes[aliases] = common[: common.rfind("/") + 1]
         return self._prefixes[aliases]
 
     def _run(self, statement: str, wanted: frozenset[str]) -> list[tuple[str, Sample]]:

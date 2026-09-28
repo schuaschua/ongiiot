@@ -27,6 +27,7 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_scheduler as scheduler
 from constructs import Construct
 
+from detect.adapters.reader import DEFAULT_STRATEGY
 from facility.model import Facility
 from infra.stacks.simulator import SWITCH_CONTEXT, desired_count
 
@@ -34,7 +35,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = "detect/Dockerfile"
 # Build-context paths only the other image needs: kept out of this asset's fingerprint.
 IMAGE_EXCLUDE = ["sim"]
-READER_STRATEGY = "batch_get"  # AD-18 spike result (2026-09-29)
 TIMEOUT_S = 50
 MEMORY_MB = 1024
 MAX_EVENT_AGE_S = 60
@@ -118,7 +118,7 @@ class DetectionStack(cdk.Stack):
             max_event_age=cdk.Duration.seconds(MAX_EVENT_AGE_S),
             role=self.role,
             log_group=self.log_group,
-            environment={"STAGE": stage, "READER_STRATEGY": READER_STRATEGY},
+            environment={"STAGE": stage, "READER_STRATEGY": DEFAULT_STRATEGY},
         )
 
         self.invoke_role = iam.Role(

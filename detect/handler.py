@@ -8,7 +8,8 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
 4. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
 5. Log one JSON summary line.
 
-Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` default, or ``execute_query``),
+Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
+``reader.DEFAULT_STRATEGY``),
 ``FACILITY_PATH`` (default: the bundled ``facility.yaml``). The facility model, pipe metadata and
 SiteWise clients are built once per cold start.
 """
@@ -25,13 +26,12 @@ from types import MappingProxyType
 from typing import Any
 
 from detect.adapters.derived_writer import DerivedWriter
-from detect.adapters.reader import Reader, make_reader
+from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
 from detect.core import dq_score
 from detect.core.models import Contract, FacilityWindow, Finding, PipeMeta, PipeWindow, Window
 from detect.core.window import window_bounds
 from facility.model import DEFAULT_PATH, Facility, load
 
-DEFAULT_READER_STRATEGY = "batch_get"  # AD-18 spike, 2026-09-29: see the spine
 PASS1_DETECTORS: Sequence[Any] = ()  # dq_* detectors arrive in Stories 2.2 and 2.3
 
 
@@ -97,6 +97,7 @@ def run(
     clock: Callable[[], float] = time.monotonic,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
+    t_run = clock()
     f = rt.facility
     tunables = f.tunables
     start, end = window_bounds(scheduled_time, tunables)
@@ -110,12 +111,19 @@ def run(
     findings: list[Finding] = []
     ran_ok: list[str] = []
     for det in detectors:
+        # A detector's findings count only if it completed on every pipe and all are well formed.
+        own: list[Finding] = []
         try:
             for pipe in fw.pipes.values():
-                findings += det.detect(_pipe_window(fw, pipe), tunables)
-            ran_ok.append(det.id)
+                found = det.detect(_pipe_window(fw, pipe), tunables)
+                for finding in found:
+                    dq_score.check_finding(finding, pipe.aliases.values())
+                own += found
         except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
             log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
+            continue
+        findings += own
+        ran_ok.append(det.id)
     scores = dq_score.score_facility(fw, findings)
     pipes = {
         pid: replace(p, dq=MappingProxyType({m: scores[a][0] for m, a in p.aliases.items()}))
@@ -146,6 +154,7 @@ def run(
         "values_written": written,
         "detectors": {d.id: d.version for d in detectors},
         "ran_ok": ran_ok,
+        "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
     return summary
@@ -177,13 +186,17 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None) -> Runtime:
             client = boto3.client(
                 "iotsitewise", config=Config(retries={"mode": "standard", "max_attempts": 3}, max_pool_connections=20)
             )
+            # Writes: the derived writer is the only retry layer inside the 50 s budget (as sim/main.py).
+            write_client = boto3.client("iotsitewise", config=Config(retries={"mode": "standard", "max_attempts": 1}))
+        else:
+            write_client = client
         targets = dq_aliases(facility)
         _RUNTIME = Runtime(
             facility=facility,
             pipes=pipe_metas(facility),
             dq_targets=targets,
-            reader=make_reader(env.get("READER_STRATEGY") or DEFAULT_READER_STRATEGY, client),
-            writer=DerivedWriter(client, allowed=[a for pair in targets.values() for a in pair]),
+            reader=make_reader(env.get("READER_STRATEGY") or DEFAULT_STRATEGY, client),
+            writer=DerivedWriter(write_client, allowed=[a for pair in targets.values() for a in pair]),
         )
     return _RUNTIME
 
