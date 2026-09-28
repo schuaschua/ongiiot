@@ -3,12 +3,12 @@ title: 'Story 4.1: List running injections and record their true end'
 type: 'feature'
 ticket: 'OG-18'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: 'cf72ec29408be5d643b0a7e4caeaf769b61e1eb1'
 context:
@@ -83,9 +83,23 @@ context:
 - The poller attempts the `effective_end` update on each poll for cancelled injections whose effective end has passed, conditioned `attribute_exists(pk) AND attribute_not_exists(effective_end)` so a never-applied injection gets no row; success or a conditional failure marks it done in memory (one attempt per process), other errors retry next poll.
 - IAM: `dynamodb:UpdateItem` on `injection_log` with `ForAllValues:StringEquals dynamodb:Attributes [pk, effective_end]` and `StringEqualsIfExists dynamodb:ReturnValues NONE`. Not yet verified against live IAM (no deploy in this session).
 
+- Live (read-only, 2026-09-29 05:44): `ops.inject list --recent-min 600` against `sim-control-poc-dj` listed the night's 9 test injections with effective ends at their cancel times and planned ends preserved. The simulator's `effective_end` write is not deployed (tests only).
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 0, medium 5, low 5. Outcome: 5 patch groups, no loopback. The Edge Case Hunter report was still pending at triage because of the time limit; see Implementation Notes.
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| BH-1, BH-2 | Cancel-before-start shows "scheduled"; no cancelled indicator | medium | patch | `cancelled` state and flag. |
+| BH-5, IA-Q | Conditional failure is ambiguous: a late first-apply row never gets `effective_end` | medium | patch | Retry for 10 min after the effective end. |
+| VG-1, VG-2 | Retry, scheduled and `--recent-min` untested | medium | patch | Tests. |
+| BH-7 | `ForAllValues` passes when the key is absent | medium | patch | `Null` condition. |
+| BH-3, BH-4, BH-8 | `list` bypasses AWS error handling; stale description; redeploy note | low | patch | Fixed. |
+| BH-6 | `_ended` grows and is lost on restart | low | reject | Bounded by `sim_control` size; a re-send after restart is conditional and harmless. |
+| IA-scoring | No log reader uses `effective_end` yet | low | defer | Scoring reads arrive with Epic 4 demo scoring; the field is available. |
 
 ## Verification
 
