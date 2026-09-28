@@ -123,7 +123,7 @@ context:
 - **Overview:** the template holds a row prototype (`__AREA__`) and a pipe prototype (`__PIPE_ID__`); the handler clones one row per area and one stat panel per pipe (latest value of the six aliases, `PropertyValue`), each linking to `pipe-detail[-<initials>]` with `var-pipe_id` and `var-area`. Refresh 30 s (144 latest-value queries per refresh).
 - **Service account:** one per stage (`ongiiot-provision-<stage>`, Admin), reused across runs; tokens (900 s) are deleted in a `finally`. Delete removes the stage's dashboards, data source, folder and then the service account.
 
-- Live check (2026-09-29 00:05, run 36443979003):
+- Live check (2026-09-28 ~23:45, run 36443979003):
   - Workspace `g-f2edb8f41a` is ACTIVE on Grafana 12.4 with AWS_SSO; cross-region Identity Center works; the owner is ADMIN; plugin 2.6.3.
   - Folder, data source and dashboards are provisioned.
   - A Grafana query for P-007 `flow_in` returned 299 points in 5 min.

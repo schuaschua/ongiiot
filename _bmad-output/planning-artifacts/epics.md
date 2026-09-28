@@ -93,18 +93,24 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | Item | Key | Status at push |
 |------|-----|----------------|
 | Epic 1 | OG-1 | In Progress |
-| Epic 2 | OG-2 | To Do |
-| Epic 3 | OG-3 | To Do |
-| Epic 4 | OG-4 | To Do |
+| Epic 2 | OG-2 | Done |
+| Epic 3 | OG-3 | Done |
+| Epic 4 | OG-4 | In Progress |
 | 1.1 | OG-5 | Done |
 | 1.2 | OG-6 | Done |
 | 1.3 | OG-7 | Done (merged in PR #1, `ee4936f`; poc not yet deployed) |
 | 1.4 | OG-8 | Done (PR #2) |
 | 1.5 | OG-9 | Done (PR #3) |
-| 2.1 | OG-10 | In Progress |
-| 2.2–2.4 | OG-11 – OG-13 | To Do |
-| 3.1–3.4 | OG-14 – OG-17 | To Do |
-| 4.1–4.5 | OG-18 – OG-22 | To Do |
+| 2.1 | OG-10 | Done (PR #4) |
+| 2.2 | OG-11 | Done (PR #5) |
+| 2.3 | OG-12 | Done (PR #6) |
+| 2.4 | OG-13 | Done (PR #7) |
+| 3.1 | OG-14 | Done (PR #8) |
+| 3.2 | OG-15 | Done (PR #9) |
+| 3.3 | OG-16 | Done (PR #10) |
+| 3.4 | OG-17 | Done (PR #11) |
+| 4.1 | OG-18 | Done (PR #12) |
+| 4.2–4.5 | OG-19 – OG-22 | To Do |
 
 ## Epic List
 
