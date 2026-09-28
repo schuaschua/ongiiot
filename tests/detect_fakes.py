@@ -189,7 +189,7 @@ def evaluate_condition(expr: str | None, item: dict | None, names: dict | None =
 class FakeDynamoDB:
     """In-memory DynamoDB low-level client for tables keyed ``pk``/``sk`` (both S): ``query`` (``pk = :pk``,
     ascending ``sk``, paged by ``page``), ``get_item``, ``put_item``, ``delete_item`` and ``transact_write_items``
-    (all-or-nothing, ``TransactionCanceledException`` with ``CancellationReasons``), each honouring
+    (all-or-nothing, ``TransactionCanceledException`` with ``CancellationReasons``) and ``update_item`` (``SET`` only), each honouring
     ``ConditionExpression``. ``before_write`` (callable(fake, op)) runs before every write, so a test can
     make another writer win a race. ``fail_writes``: a client error code raised on every write."""
 
@@ -241,6 +241,25 @@ class FakeDynamoDB:
         self.writes.append(("put_item", {"Item": copy.deepcopy(Item), "ConditionExpression": ConditionExpression}))
         return {}
 
+    def update_item(
+        self, TableName, Key, UpdateExpression, ConditionExpression=None, ExpressionAttributeNames=None, ExpressionAttributeValues=None
+    ):
+        """Only ``SET <name> = :v[, ...]`` (as ``incidents.mark_notified`` uses); like DynamoDB, a missing item
+        is created unless the condition fails."""
+        self._pre("update_item")
+        key = self._key(TableName, Key)
+        if not self._check(key, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues):
+            raise FakeClientError("ConditionalCheckFailedException", "The conditional request failed")
+        m = re.fullmatch(r"SET\s+(.+)", UpdateExpression.strip())
+        assert m, f"fake supports only SET, got {UpdateExpression!r}"
+        item = self.items.setdefault(key, copy.deepcopy(Key))
+        names = ExpressionAttributeNames or {}
+        for assign in m.group(1).split(","):
+            name, value = (x.strip() for x in assign.split("="))
+            item[names.get(name, name)] = copy.deepcopy(ExpressionAttributeValues[value])
+        self.writes.append(("update_item", {"Key": copy.deepcopy(Key), "UpdateExpression": UpdateExpression, "ConditionExpression": ConditionExpression}))
+        return {}
+
     def delete_item(self, TableName, Key, ConditionExpression=None, ExpressionAttributeNames=None, ExpressionAttributeValues=None):
         self._pre("delete_item")
         key = self._key(TableName, Key)
@@ -284,3 +303,19 @@ class FakeDynamoDB:
 
         de = TypeDeserializer()
         return {k: {a: de.deserialize(v) for a, v in item.items()} for k, item in self.items.items()}
+
+
+class FakeSNS:
+    """Records ``publish`` calls; ``fail`` (a client error code) fails every publish until cleared."""
+
+    def __init__(self, fail: str | None = None):
+        self.published: list[dict] = []
+        self.fail = fail
+        self.attempts = 0
+
+    def publish(self, TopicArn, Subject, Message, **kwargs):
+        self.attempts += 1
+        if self.fail:
+            raise FakeClientError(self.fail, "publish failed")
+        self.published.append({"TopicArn": TopicArn, "Subject": Subject, "Message": Message})
+        return {"MessageId": f"msg-{len(self.published)}"}

@@ -9,6 +9,9 @@ history), let ``detect/core/incident_rules.decide`` pick the change, then write 
   (``status=CLOSED``, ``closed_reason=quiet``, ``attribute_not_exists(pk)``);
 - reopen: one ``TransactWriteItems``: delete ``C#<incident_id>`` (``closed_reason = quiet AND last_run < :run_id``)
   and put ``OPEN`` (``attribute_not_exists(pk)``) with the same ``incident_id`` and ``notified_at``.
+- notified (AD-7 outbox, called by ``notifier.py`` after a publish): ``UpdateItem`` of ``sk=OPEN``,
+  ``SET notified_at`` conditional on ``incident_id = :iid AND attribute_not_exists(notified_at)``. It does not
+  touch ``last_run``, so it never blocks the next run's update.
 
 Every item carries ``last_run`` (the run's ``run_id``) and ``config_hash``. A run whose ``run_id`` is at or
 before the ``last_run`` of any of the pipe's items makes no write for that pipe (AD-12 replay guard). A
@@ -213,6 +216,26 @@ class Incidents:
         closed = [from_item(i) for i in items if str(i["sk"]).startswith(CLOSED_PREFIX)]
         runs = [str(i["last_run"]) for i in items if i.get("last_run")]
         return PipeState(open=open_, closed=closed, max_last_run=max(runs) if runs else None)
+
+    # -- the outbox marker (AD-7) ------------------------------------------------------------------
+
+    def mark_notified(self, pipe_id: str, incident_id: str, when: datetime) -> bool:
+        """``SET notified_at`` on the pipe's OPEN slot if it still holds ``incident_id`` and has none yet.
+        ``False`` on a conditional failure (already notified, or the slot changed); other errors propagate."""
+        try:
+            self._client.update_item(
+                TableName=self._table,
+                Key={"pk": {"S": pipe_id}, "sk": {"S": OPEN_SK}},
+                UpdateExpression="SET #na = :when",
+                ConditionExpression="#iid = :iid AND attribute_not_exists(#na)",
+                ExpressionAttributeNames={"#na": "notified_at", "#iid": "incident_id"},
+                ExpressionAttributeValues={":when": {"S": iso(when)}, ":iid": {"S": incident_id}},
+            )
+        except Exception as exc:
+            if is_conflict(exc):
+                return False
+            raise
+        return True
 
     # -- the run ----------------------------------------------------------------------------------
 

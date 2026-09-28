@@ -14,7 +14,7 @@ from detect.adapters.incidents import Incidents
 from detect.adapters.reader import make_reader
 from detect.core.models import Finding
 from facility.model import DEFAULT_PATH, load
-from tests.detect_fakes import FakeDynamoDB, FakeSiteWise
+from tests.detect_fakes import FakeDynamoDB, FakeSiteWise, FakeSNS
 
 STAGE = "poc-dj"
 ALL_IDS = ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap", "leak_mass_balance", "leak_methane_rise", "outlier_peer"]
@@ -58,6 +58,9 @@ def live_store(facility, lo=START.timestamp() - 120, hi=END.timestamp() + 60):
 
 
 TABLE = f"incidents-{STAGE}"
+TOPIC = "arn:aws:sns:ap-southeast-1:123456789012:operators-poc-dj"
+NOTIFY_ENV = {"OPERATOR_TOPIC_ARN": TOPIC, "GRAFANA_URL": "https://g-1.grafana-workspace.ap-southeast-1.amazonaws.com", "DASHBOARD_UID": "pipe-detail-dj"}
+ENV = {"STAGE": STAGE, "INCIDENTS_TABLE": TABLE, **NOTIFY_ENV}
 
 
 def runtime(facility, fake, strategy="batch_get", db=None):
@@ -264,21 +267,42 @@ def test_bad_events_are_refused(event):
 def test_handler_entry_point(facility, monkeypatch):
     fake = FakeSiteWise(live_store(facility), page=20000)
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE}, client=fake, dynamodb=FakeDynamoDB(TABLE))
+    rt = handler.runtime(ENV, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS())
     assert rt.reader.strategy == handler.DEFAULT_STRATEGY == "batch_get"
     assert handler.runtime({"STAGE": "poc"}) is rt  # cached per cold start
     summary = handler.handler({"scheduled_time": SCHEDULED})
     assert summary["values_written"] == 288 + 48
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    env = {"STAGE": STAGE, "INCIDENTS_TABLE": TABLE, "READER_STRATEGY": "execute_query"}
-    assert handler.runtime(env, client=fake, dynamodb=FakeDynamoDB(TABLE)).reader.strategy == "execute_query"
+    env = {**ENV, "READER_STRATEGY": "execute_query"}
+    assert handler.runtime(env, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS()).reader.strategy == "execute_query"
     monkeypatch.setattr(handler, "_RUNTIME", None)
     with pytest.raises(ValueError, match="STAGE"):
         handler.runtime({}, client=fake)
     monkeypatch.setattr(handler, "_RUNTIME", None)
     with pytest.raises(ValueError, match="INCIDENTS_TABLE"):
         handler.runtime({"STAGE": STAGE}, client=fake, dynamodb=FakeDynamoDB(TABLE))
+    for name in NOTIFY_ENV:
+        monkeypatch.setattr(handler, "_RUNTIME", None)
+        with pytest.raises(ValueError, match=name):
+            handler.runtime({k: v for k, v in ENV.items() if k != name}, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS())
     monkeypatch.setattr(handler, "_RUNTIME", None)
+
+
+def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
+    fake, sns = FakeSiteWise(leak_store(facility), page=20000), FakeSNS()
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    handler.runtime(ENV, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=sns)
+
+    class Ctx:
+        def get_remaining_time_in_millis(self):
+            return 40_000
+
+    summary = handler.handler({"scheduled_time": SCHEDULED}, Ctx())
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    (msg,) = sns.published
+    assert msg["TopicArn"] == TOPIC and len(summary["notified"]) == 1
+    link = msg["Message"].split("\n")[-1].split(": ", 1)[1]
+    assert link.startswith(f"{NOTIFY_ENV['GRAFANA_URL']}/d/{NOTIFY_ENV['DASHBOARD_UID']}/")
 
 
 def test_write_client_has_no_sdk_retries(monkeypatch):
@@ -288,9 +312,12 @@ def test_write_client_has_no_sdk_retries(monkeypatch):
     services = []
     monkeypatch.setattr(boto3, "client", lambda service, config=None, **kw: made.append(config) or services.append(service) or object())
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE})
+    rt = handler.runtime(ENV)
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    assert sorted(services) == ["dynamodb", "iotsitewise", "iotsitewise"]
+    assert sorted(services) == ["dynamodb", "iotsitewise", "iotsitewise", "sns"]
+    (sns_config,) = [c for c, svc in zip(made, services, strict=True) if svc == "sns"]
+    assert sns_config.connect_timeout == sns_config.read_timeout == 5
+    assert sns_config.retries == {"mode": "standard", "max_attempts": 2}
     made = [c for c, svc in zip(made, services, strict=True) if svc == "iotsitewise"]
     attempts = [c.retries["max_attempts"] for c in made]
     assert sorted(attempts) == [1, 3]
@@ -448,7 +475,7 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
     monkeypatch.setattr(handler, "load", lambda path, stage: broken)
     monkeypatch.setattr(handler, "_RUNTIME", None)
     with pytest.raises(ValueError, match=detector_id):
-        handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE}, client=FakeSiteWise({}), dynamodb=FakeDynamoDB(TABLE))
+        handler.runtime(ENV, client=FakeSiteWise({}), dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS())
     assert handler._RUNTIME is None
 
 
