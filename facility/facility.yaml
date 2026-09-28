@@ -195,8 +195,8 @@ tunables:
   reopen_grace_s: 600
   dq_min: 0.5
   detectors:                     # keys under each id are owned by that detector
-    leak_mass_balance: {}
-    leak_methane_rise: {}
+    leak_mass_balance: {avg_s: 60, min_points: 30, min_frac: 0.02, full_frac: 0.08, pressure_drop_frac: 0.006, min_flow_frac: 0.01}  # mean (flow_in - flow_out) / flow_in
+    leak_methane_rise: {avg_s: 60, min_points: 30, min_ppm: 30, full_ppm: 300}  # trailing mean minus peer median, ppmv
     outlier_peer: {}
     dq_flatline: {min_run_s: 30, full_s: 60, rel_tol: 1.0e-6}   # railed within rel_tol x contract span
     dq_stuck: {min_run_s: 30, full_s: 60}                       # exactly repeated, not railed

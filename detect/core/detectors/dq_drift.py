@@ -23,18 +23,14 @@ import math
 from collections.abc import Mapping
 from typing import Literal
 
+from detect.core.detectors._peers import median as _median
+from detect.core.detectors._peers import peer_groups
 from detect.core.detectors._trailing import is_good, own_tunables
 from detect.core.models import FacilityWindow, Finding, PipeMeta, Tunables
 
 ID = "dq_drift"
 MIN_PEERS = 2
 KEYS = ("fit_s", "min_points", "min_rate", "full_rate", "min_r2")
-
-
-def _median(xs: list[float]) -> float:
-    s = sorted(xs)
-    n = len(s)
-    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
 def fit_line(xs: list[float], ys: list[float]) -> tuple[float, float]:
@@ -83,9 +79,7 @@ class DqDrift:
                     out[math.floor(ts)] = float(s.value)
             return out
 
-        groups: dict[str, list[PipeMeta]] = {}
-        for pid in sorted(fw.pipes):
-            groups.setdefault(fw.pipes[pid].peer_group, []).append(fw.pipes[pid])
+        groups = peer_groups(fw)
 
         out: list[Finding] = []
         for members in groups.values():
