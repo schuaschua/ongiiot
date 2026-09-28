@@ -19,3 +19,12 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-cicd-github-actions.md`
   summary: Grafana provisioning (AD-16 `infra/grafana_provision.py`) needs a step in `deploy.yml` and Grafana API permissions for the CI deploy path.
   evidence: The deploy role can only assume CDK bootstrap roles, and deploy.yml has no post-deploy provisioning step; surfaces in Story 1.5.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-4-simulator-fargate.md`
+  summary: Decide the cross-stack reference strength for the pipe asset ARNs SimulatorStack imports from SiteWiseAssetsStack (set `@aws-cdk/core:defaultCrossStackReferences`, or pass the ARNs another way).
+  evidence: CDK defaults to strong references (exports) and warns at synth; a change that replaces pipe assets would fail the SiteWise stack deploy while SimulatorStack still imports the old exports.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-4-simulator-fargate.md`
+  summary: The Story 4.4 simulator health alarm ("running tasks < 1") must respect the `simulator=off` switch (compare against desired count, or disable when off).
+  evidence: With desired count 0 the alarm as specified in AD-15 would fire permanently.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-4-simulator-fargate.md`
+  summary: Update the architecture `.memlog.md` CI/CD entries (poc now deploys by manual dispatch from main; no reviewer gate) and add the Story 1.4 decisions (Fargate, IAM cannot scope by alias, on/off switch).
+  evidence: The memlog still records "merge to main deploys poc" and "reviewer approval" as ADOPTED.

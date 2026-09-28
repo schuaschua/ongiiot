@@ -73,7 +73,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Rule:**
   - Only the producer writes raw aliases. Nothing updates or deletes them. Values are stored as produced, never clamped.
   - The simulator never resends a timestamp: per-alias timestamps strictly increase, and after a restart it resumes at wall-clock now.
-  - Derived values live only under the `derived/` alias segment, written only by the detection run (AD-13). IAM enforces both (AD-17).
+  - Derived values live only under the `derived/` alias segment, written only by the detection run (AD-13). IAM limits each writer to its stage's assets; the raw/derived split is enforced by the writers' code guards, because IAM cannot scope by alias (AD-17).
 
 ### AD-4 — Detectors never see ground truth
 
@@ -224,12 +224,12 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 
 | Role | Allowed | Denied explicitly |
 | --- | --- | --- |
-| Simulator task | `BatchPutAssetPropertyValue` on raw aliases; `DescribeTimeSeries`; `sim_control` read; `injection_log` write | `derived/*` aliases |
+| Simulator task | `BatchPutAssetPropertyValue` and `DescribeTimeSeries` on the stage's pipe assets; `sim_control` read (`Scan`); `injection_log` write (`PutItem`) | `derived/*` aliases: not an IAM deny (IAM cannot scope by alias); the `sim/writer.py` code guard refuses them |
 | Detection Lambda | SiteWise read (`ExecuteQuery`, `BatchGet*`, `Describe*`, `List*`); `BatchPutAssetPropertyValue` on `derived/*` only; `incidents` read/write; publish to operator topic | raw aliases, `sim_control`, `injection_log` |
 | Ops (developer) | `sim_control` read/write/delete; invoke detection Lambda; `injection_log` read | SiteWise writes |
 | Grafana | `AWSIoTSiteWiseReadOnlyAccess` | everything else |
 
-  - [ASSUMPTION] SiteWise IAM can scope `BatchPutAssetPropertyValue` per alias prefix. Regardless, the raw writer in `sim/` rejects `derived/` aliases and `derived_writer.py` rejects all others, each with a unit test.
+  - Finding (2026-09-28, AWS service authorization reference): IAM cannot scope `BatchPutAssetPropertyValue` by alias. No SiteWise action supports the `iotsitewise:propertyAlias` condition key, so the "Denied explicitly" `derived/*` and raw-alias columns cannot be written as IAM denies. IAM scopes writes to the stage's pipe asset ARNs; the raw/derived boundary is the code guard: the raw writer in `sim/` (`sim/writer.py`) rejects `derived/` and `attr/` aliases and `derived_writer.py` rejects all others, each with a unit test.
 
 ### AD-18 — SiteWise reads go through one reader adapter
 
@@ -386,7 +386,8 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 | AWS Lambda + EventBridge Scheduler (1-minute rate) | managed service |
 | Amazon DynamoDB (`incidents`, `sim_control`, `injection_log`) | managed service |
 | Amazon SNS (operator topic, team-alarms topic) | managed service |
-| Amazon ECS on Fargate (simulator) `[ASSUMPTION]` | managed service |
+| Amazon ECS on Fargate (simulator, one task, 0.25 vCPU / 0.5 GB, X86_64) | managed service |
+| uv (simulator image build, `ghcr.io/astral-sh/uv`) | 0.12.19 |
 | AWS IAM Identity Center (Grafana login) `[ASSUMPTION]` | managed service |
 | GitHub Actions with AWS OIDC (`GitHubOidcStack`, roles `ongiiot-github-deploy` and `ongiiot-github-diff`) | managed service |
 | AWS CDK CLI (CI, `npx aws-cdk@…`) | 2.1143.0 |
@@ -489,9 +490,9 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 
 | Question | Verify by |
 | --- | --- |
-| Can SiteWise IAM scope `BatchPutAssetPropertyValue` by alias prefix (AD-17)? | Day 1 infra spike; the code guard applies either way |
+| ~~Can SiteWise IAM scope `BatchPutAssetPropertyValue` by alias prefix (AD-17)?~~ Resolved 2026-09-28: no; grants are scoped to pipe asset ARNs and the code guard is the boundary | AWS service authorization reference |
 | ExecuteQuery latency at full load within the 50 s timeout (AD-18)? | Day 1 reader spike; switch to BatchGet fallback if not |
 | Can IAM Identity Center be enabled in the POC account for Grafana? | Day 0 with the account owner; fallback self-hosted Grafana with the same dashboards |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
-| Fargate for the simulator and 1 Hz per measurement hold? | Day 1; change is local to `sim/` and `infra/` |
+| Does 1 Hz per measurement hold on Fargate, and do the alias writes (seed Lambda, simulator task) succeed with grants on pipe asset ARNs, or is the `time-series/*` resource needed (AD-17)? Fargate itself is settled (`SimulatorStack-<stage>`, Story 1.4, 2026-09-28) | First `poc-<initials>` deploy |
 | Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Before the demo; today anyone with write access can dispatch `poc` from `main` |

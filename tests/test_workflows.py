@@ -93,13 +93,20 @@ def test_common_hygiene(name):
 
 def test_ci_triggers_and_jobs(ci):
     assert triggers(ci) == {"pull_request": {"branches": ["main"]}, "push": {"branches": ["main"]}}
-    assert set(ci["jobs"]) == {"test", "synth", "diff"}
+    assert set(ci["jobs"]) == {"test", "synth", "image", "diff"}
     runs = {j: [s.get("run", "") for s in job["steps"]] for j, job in ci["jobs"].items()}
     assert "uv run pytest -q" in runs["test"]
     assert f"npx --yes {CDK_CLI} synth -c stage=poc --quiet" in runs["synth"]
     assert f'npx --yes {CDK_CLI} diff "*-poc" -c stage=poc --method template' in runs["diff"]
     assert ci["jobs"]["diff"]["if"] == "github.event_name == 'pull_request'"
+    assert runs["image"] == [
+        "",
+        "docker build --platform linux/amd64 -f sim/Dockerfile -t ongiiot-sim:ci .",
+        'docker run --rm --platform linux/amd64 ongiiot-sim:ci python -c'
+        ' "import sim.main, boto3, yaml; from facility.model import load; load()"',
+    ]
     assert not uses_aws(ci["jobs"]["test"]) and not uses_aws(ci["jobs"]["synth"])
+    assert not uses_aws(ci["jobs"]["image"]) and "permissions" not in ci["jobs"]["image"]
     for job in ci["jobs"].values():
         assert "environment" not in job
         assert not any(" deploy" in s.get("run", "") for s in job["steps"])
@@ -109,7 +116,18 @@ def test_deploy_triggers(deploy):
     # Deploys are manual only: starting the run is the approval for `poc`.
     on = triggers(deploy)
     assert set(on) == {"workflow_dispatch"}
-    assert on["workflow_dispatch"]["inputs"]["stage"]["required"] is True
+    inputs = on["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"stage", "simulator"}
+    assert inputs["stage"]["required"] is True
+
+
+def test_deploy_simulator_input(deploy):
+    # Quoted in the YAML: PyYAML (YAML 1.1) would otherwise read on/off as booleans.
+    sim = triggers(deploy)["workflow_dispatch"]["inputs"]["simulator"]
+    assert sim["type"] == "choice"
+    assert sim["options"] == ["on", "off"]
+    assert sim["default"] == "on"
+    assert sim["required"] is True
 
 
 def test_deploy_test_job(deploy):
@@ -164,9 +182,14 @@ def test_deploy_job_wiring(deploy):
         "group": "deploy-${{ needs.resolve.outputs.stage }}",
         "cancel-in-progress": False,
     }
-    assert job["env"]["STAGE"] == "${{ needs.resolve.outputs.stage }}"
+    assert job["env"] == {
+        "STAGE": "${{ needs.resolve.outputs.stage }}",
+        "SIMULATOR": "${{ inputs.simulator }}",
+    }
     (run,) = [s["run"] for s in job["steps"] if "cdk" in s.get("run", "")]
-    assert run == f'npx --yes {CDK_CLI} deploy "*-$STAGE" -c "stage=$STAGE" --require-approval never'
+    assert run == (
+        f'npx --yes {CDK_CLI} deploy "*-$STAGE" -c "stage=$STAGE" -c "simulator=$SIMULATOR" --require-approval never'
+    )
     assert "GitHubOidcStack" not in (WORKFLOWS / "deploy.yml").read_text()
     assert "oidc" not in run
 
