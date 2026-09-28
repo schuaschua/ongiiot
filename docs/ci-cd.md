@@ -223,6 +223,39 @@ uv run python -m ops.inject dq_gap --pipe P-020 --measurement flow_out --minutes
 
 `flow_out_dq` on P-020 reads `0.0` / `dq_gap` from about 2 minutes after the gap starts until 1 to 2 minutes after it ends (it ends by itself after 3 minutes). `temperature_dq` on P-010 reads `0.0` / `dq_drift` from about 5 to 6 minutes after the drift starts. Other sensors stay `1.0` / `""`. Cancel the drift when done; it clears 1 to 2 minutes later.
 
+### Leak checks (pass 2)
+
+After pass 1 has scored every sensor, pass 2 runs the leak checks on the same window (`detect/core/detectors/leak_*.py`, tunables under `tunables.detectors.leak_*`). They use only trusted sensors: any sensor with `_dq` below `dq_min` (0.5) is left out. If a sensor a check needs is untrusted, that check makes no finding for the pipe; if a supporting sensor is untrusted, the finding is still made and its explanation names the excluded sensor. Each finding names one pipe and carries a confidence (0 to 1), the raw aliases that drove it and a one-sentence explanation with the key numbers.
+
+| Check | Fires when | Confidence | Needs |
+| --- | --- | --- | --- |
+| `leak_mass_balance` | mass goes missing: the mean of `(flow_in - flow_out) / flow_in` over the last `avg_s` (60 s, at least `min_points` 30 paired seconds) is at least `min_frac` (2%). A matching drop of `pressure_out` (against `pressure_in`, the last 60 s vs the rest of the window, at least `pressure_drop_frac` 0.6%) is cited as corroboration and adds both pressures to the evidence; it never changes the confidence | `frac / full_frac` (8%), capped at 1 | `flow_in`, `flow_out` trusted; `pressure_out` and `pressure_in` optional |
+| `leak_methane_rise` | methane around the pipe is well above its peers': the mean of `methane_ppm` over the last `avg_s` (60 s) minus the median of the same mean on the other pipes of its `peer_group` is at least `min_ppm` (30 ppmv). Untrusted peers are left out of the median and named; at least 2 trusted peers are needed | `excess / full_ppm` (300 ppmv), capped at 1 | `methane_ppm` trusted |
+
+Calibration on the simulator (`tests/test_leak_detectors.py`): normal output never comes close. Over 4 simulated days (24 pipes, one reading a minute) the mean loss fraction peaked at 0.16% (min 2%), methane at 0.6 ppmv above the peer median (min 30 ppmv) and the relative `pressure_out` drop at 0.4% (corroboration 0.6%). No leak finding appears in 4 x 30 consecutive one-minute runs at different times of day and seeds. The default injected leak (10% of the pipe's mean flow, methane rising toward 600 ppmv with a 20 s time constant) scores confidence 1.0 on both checks once it has been in the window for 60 s, and at least 0.8 by the second run after it enters the window.
+
+**Where to see findings until Story 3.3.** No incident, email or dashboard shows them yet. They appear only in the run's summary log line, as `"findings":[{"detector":…,"pipe":…,"confidence":…}]` (empty when there are none). `detectors` and `ran_ok` in the same line list the leak checks too; a leak check that failed is logged on its own error line and left out of `ran_ok`.
+
+```bash
+aws logs tail /aws/lambda/detection-poc-dj --region ap-southeast-1 --since 10m --format short | grep '"findings":\[{'
+```
+
+To try the checks on a developer stage with the simulator on (section 5):
+
+```bash
+export STAGE=poc-dj SIM_CONTROL_TABLE=sim-control-poc-dj
+uv run python -m ops.inject leak --pipe P-007 --minutes 10     # default rate: 10% of the pipe's mean flow; note its "pk"
+```
+
+**Both P-007 findings appear about 2 to 3 minutes after the injection** (the 60 s ingest lag, then about 45 s of leak in the window for confidence 0.8, and runs start on the minute), and no other pipe shows a finding. They clear 2 to 4 minutes after the leak ends (methane decays over about a minute). Cancel with `uv run python -m ops.inject cancel <pk>`. To see the exclusion rule, add `dq_flatline` on P-007 `flow_out` during the leak: after 2 to 3 minutes only `leak_methane_rise` remains.
+
+Known limits:
+
+- The pressure corroboration compares the last 60 s with the rest of the 15-minute window, so a leak older than the window is no longer cited as corroborated (both checks still fire).
+- A flow meter drifting low looks like a loss until `dq_drift` marks it untrusted (about 5 minutes). A drift of 2% of flow within that time would raise `leak_mass_balance`.
+- A methane rise shared by the whole peer group (weather, a flare) moves the median too and is not reported. For the same reason, leaks on up to 3 pipes of one 6-pipe group are each found, but on 4 or more they hide each other.
+- The checks only report: the pipe's `alert_state`, incidents and email come with Stories 3.3 and 3.4.
+
 The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
 ## What this does and does not protect

@@ -7,8 +7,11 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
 3. Pass 1: the ``dq_*`` detectors (``dq_flatline``, ``dq_stuck``, ``dq_gap``: pipe; ``dq_drift``: facility),
    dispatched by ``kind`` (``pipe``: once per pipe; ``facility``: once per run), then ``dq_score`` with
    the no-sample gap rule (one ``dq_gap`` finding per empty alias).
-4. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
-5. Log one JSON summary line.
+4. Pass 2: the ``leak_*`` detectors (``leak_mass_balance``: pipe; ``leak_methane_rise``: facility) on the
+   dq-annotated window (``PipeMeta.dq`` filled); they exclude sensors with ``dq < tunables.dq_min``.
+   Their findings go to the summary line only (incidents and email come with Stories 3.3 and 3.4).
+5. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
+6. Log one JSON summary line, with ``findings: [{detector, pipe, confidence}]`` for pass 2.
 
 Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
 ``reader.DEFAULT_STRATEGY``),
@@ -20,6 +23,7 @@ so a missing key fails the cold start.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -31,12 +35,13 @@ from typing import Any
 from detect.adapters.derived_writer import DerivedWriter
 from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
 from detect.core import dq_score
-from detect.core.detectors import PASS1
+from detect.core.detectors import PASS1, PASS2
 from detect.core.models import Contract, Detector, FacilityWindow, Finding, PipeMeta, PipeWindow, Tunables, Window
 from detect.core.window import window_bounds
 from facility.model import DEFAULT_PATH, Facility, load
 
 PASS1_DETECTORS: Sequence[Detector] = PASS1
+PASS2_DETECTORS: Sequence[Detector] = PASS2
 KINDS = ("pipe", "facility")
 
 
@@ -113,6 +118,7 @@ def run(
     rt: Runtime,
     scheduled_time: datetime,
     detectors: Sequence[Detector] = PASS1_DETECTORS,
+    pass2: Sequence[Detector] = PASS2_DETECTORS,
     clock: Callable[[], float] = time.monotonic,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -145,6 +151,17 @@ def run(
     }
     fw = FacilityWindow(pipes=pipes, window=fw.window)
 
+    # Pass 2: leak_* detectors on the dq-annotated window, with the same isolation (AD-5).
+    leaks: list[Finding] = []
+    for det in pass2:
+        try:
+            own = _run_detector(det, fw, tunables, check=check_pass2_finding)
+        except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
+            log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
+            continue
+        leaks += own
+        ran_ok.append(det.id)
+
     values: dict[str, float | str] = {}
     for raw, (dq, failing) in scores.items():
         dq_alias, fail_alias = rt.dq_targets[raw]
@@ -166,16 +183,38 @@ def run(
         "samples": sum(len(s) for s in fw.window.series.values()),
         "aliases_no_data": sorted(a for a, s in fw.window.series.items() if not s),
         "values_written": written,
-        "detectors": {d.id: d.version for d in detectors},
+        "detectors": {d.id: d.version for d in (*detectors, *pass2)},
         "ran_ok": ran_ok,
+        "findings": [{"detector": x.detector_id, "pipe": x.pipe_id, "confidence": x.confidence} for x in leaks],
         "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
     return summary
 
 
-def _run_detector(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[Finding]:
-    """Findings of one detector, dispatched by ``kind``; each ``dq_*`` finding must name one of its pipe's aliases."""
+def check_pass2_finding(finding: Finding, known_aliases: Sequence[str]) -> None:
+    """Raise ``ValueError`` unless a pass-2 finding is well formed: not a ``dq_*`` id, a finite confidence
+    in [0, 1], at least one evidence alias, all from its own pipe, and a non-empty explanation."""
+    if dq_score.is_dq(finding):
+        raise ValueError(f"{finding.detector_id}: a pass-2 detector cannot emit dq_* findings")
+    c = finding.confidence
+    if isinstance(c, bool) or not isinstance(c, (int, float)) or not math.isfinite(c) or not 0 <= c <= 1:
+        raise ValueError(f"{finding.detector_id}: confidence must be in [0, 1], got {c!r}")
+    known = set(known_aliases)
+    if not finding.evidence_aliases or any(a not in known for a in finding.evidence_aliases):
+        raise ValueError(f"{finding.detector_id}: evidence {finding.evidence_aliases} is not an expected alias set of the pipe")
+    if not isinstance(finding.explanation, str) or not finding.explanation.strip():
+        raise ValueError(f"{finding.detector_id}: empty explanation")
+
+
+def _run_detector(
+    det: Detector,
+    fw: FacilityWindow,
+    tunables: Tunables,
+    check: Callable[[Finding, Sequence[str]], None] = dq_score.check_finding,
+) -> list[Finding]:
+    """Findings of one detector, dispatched by ``kind``; ``check`` validates each finding against its pipe's aliases
+    (pass 1: a ``dq_*`` finding names one of them; pass 2: ``check_pass2_finding``)."""
     kind = getattr(det, "kind", None)
     if kind == "pipe":
         own: list[Finding] = []
@@ -184,7 +223,7 @@ def _run_detector(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list
             for finding in found:
                 if finding.pipe_id != pipe.pipe_id:
                     raise ValueError(f"{det.id}: finding for {finding.pipe_id} from the window of {pipe.pipe_id}")
-                dq_score.check_finding(finding, pipe.aliases.values())
+                check(finding, list(pipe.aliases.values()))
             own += found
         return own
     if kind == "facility":
@@ -193,7 +232,7 @@ def _run_detector(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list
             pipe = fw.pipes.get(finding.pipe_id)
             if pipe is None:
                 raise ValueError(f"{det.id}: finding for unknown pipe {finding.pipe_id!r}")
-            dq_score.check_finding(finding, pipe.aliases.values())
+            check(finding, list(pipe.aliases.values()))
         return found
     raise ValueError(f"{getattr(det, 'id', det)!r}: unknown detector kind {kind!r}")
 
@@ -217,7 +256,7 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None) -> Runtime:
         if not stage:
             raise ValueError("STAGE is not set")
         facility = load(env.get("FACILITY_PATH") or DEFAULT_PATH, stage=stage)
-        check_detectors(PASS1_DETECTORS, facility.tunables)
+        check_detectors((*PASS1_DETECTORS, *PASS2_DETECTORS), facility.tunables)
         if client is None:
             import boto3
             from botocore.config import Config
