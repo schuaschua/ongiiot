@@ -339,3 +339,36 @@ def test_json_log_reserved_keys_win():
     line = json.loads(fmt.format(rec))
     assert (line["msg"], line["level"], line["stage"], line["config_hash"]) == ("real", "INFO", STAGE, "h")
     assert line["ts"] != "x" and line["pipe_id"] == "P-007"
+
+
+# -- effective_end on injection_log (Story 4.1) ------------------------------------------
+
+
+def test_cancel_after_apply_sets_effective_end_once():
+    inj = leak()
+    sim, _, ctrl, log, clock = make(control=[inj])
+    sim.run(max_ticks=3)
+    assert "01LEAK" in log.items and "effective_end" not in log.items["01LEAK"]
+    stop = datetime.fromtimestamp(T0 + 3, UTC)
+    ctrl.items["01CANC"] = to_item(cancel_of(inj, "01CANC", stop))
+    sim.run(max_ticks=15)
+    row = log.items["01LEAK"]
+    assert row["effective_end"] == to_item(cancel_of(inj, "x", stop))["end_at"]
+    assert row["end_at"] == to_item(inj)["end_at"]  # planned end unchanged
+    assert len(log.updates) == 1  # once, not on every poll
+
+
+def test_effective_end_conditional_failure_is_ignored():
+    inj = leak()
+    stop = datetime.fromtimestamp(T0 + 3, UTC)
+    row = {"pk": "01LEAK", "effective_end": "already"}
+    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", stop)], log=FakeTable([row]))
+    sim.run(max_ticks=10)
+    assert log.items["01LEAK"]["effective_end"] == "already" and len(log.updates) == 1
+
+
+def test_cancel_before_apply_writes_no_log_row():
+    inj = leak(start=T0 + 60)
+    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", datetime.fromtimestamp(T0, UTC))])
+    sim.run(max_ticks=10)
+    assert log.items == {}

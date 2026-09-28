@@ -16,6 +16,7 @@ from facility.control import (
     new_injection,
     parse_ts,
     resolve,
+    windows,
     to_item,
 )
 from facility.model import load
@@ -145,3 +146,14 @@ def test_malformed_dynamodb_fields_raise_control_error(field, value, match):
         from_item(item, F)
     with pytest.raises(ControlError, match=match):
         from_item(item)  # also without the facility model
+
+
+def test_windows_fold_cancels_and_keep_planned_end():
+    inj = leak(minutes=10)
+    other = leak(iid="B", minutes=5)
+    c = cancel_of(inj, "C", T0 + timedelta(minutes=2))
+    got = {i.injection_id: (i.end_at, planned) for i, planned in windows([inj, c, other])}
+    assert got == {
+        "A": (T0 + timedelta(minutes=2), T0 + timedelta(minutes=10)),
+        "B": (T0 + timedelta(minutes=5), T0 + timedelta(minutes=5)),
+    }

@@ -2,14 +2,17 @@
 
 The poller only reads ``sim_control`` (scan, at most every ``POLL_MAX_S`` seconds). Each
 injection is logged to ``injection_log`` the first time it applies, with a conditional put
-(``attribute_not_exists(pk)``) so a restart never logs it twice.
+(``attribute_not_exists(pk)``) so a restart never logs it twice. When a cancel shortens an
+injection that already has a log row, the poller sets ``effective_end`` on that row once
+(``attribute_exists(pk) AND attribute_not_exists(effective_end)``); the planned ``end_at``
+is never changed, and an injection that never applied gets no row.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -19,6 +22,7 @@ from facility.control import (
     effective,
     format_ts,
     from_item,
+    windows,
 )
 from facility.model import Facility
 
@@ -46,6 +50,7 @@ class ControlPoller:
         self._items: list[Injection] = []
         self._logged: set[str] = set()
         self._rejected: set[str] = set()
+        self._ended: set[str] = set()
 
     @property
     def items(self) -> list[Injection]:
@@ -71,7 +76,29 @@ class ControlPoller:
                     self._rejected.add(pk)
                     LOG.warning("ignoring invalid sim_control item", extra={"fields": {"pk": pk, "error": str(exc)}})
         self._items = items
+        self._record_effective_ends(datetime.fromtimestamp(now, UTC))
         return True
+
+    def _record_effective_ends(self, now: datetime) -> None:
+        """Write ``effective_end`` onto the log row of each injection a cancel has shortened, once."""
+        for inj, planned_end in windows(self._items):
+            if inj.injection_id in self._ended or not inj.end_at < planned_end or inj.end_at > now:
+                continue
+            try:
+                self._log.update_item(
+                    Key={"pk": inj.injection_id},
+                    UpdateExpression="SET effective_end = :e",
+                    ConditionExpression="attribute_exists(pk) AND attribute_not_exists(effective_end)",
+                    ExpressionAttributeValues={":e": format_ts(inj.end_at)},
+                )
+            except Exception as exc:  # noqa: BLE001 - boto errors vary; a failed write retries next poll
+                if _error_code(exc) != "ConditionalCheckFailedException":
+                    LOG.error(
+                        "injection_log effective_end write failed",
+                        extra={"fields": {"injection_id": inj.injection_id, "error": str(exc)}},
+                    )
+                    continue
+            self._ended.add(inj.injection_id)
 
     def _scan(self) -> list[Mapping[str, Any]]:
         out: list[Mapping[str, Any]] = []

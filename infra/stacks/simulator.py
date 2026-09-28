@@ -90,7 +90,7 @@ class SimulatorStack(cdk.Stack):
             "TaskRole",
             role_name=f"simulator-task-{stage}",
             assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-            description=f"Simulator task ({stage}): raw SiteWise writes, sim_control read, injection_log write",
+            description=f"Simulator task ({stage}): raw SiteWise writes, sim_control read, injection_log write and effective_end",
         )
         self.task_role.add_to_policy(
             iam.PolicyStatement(
@@ -106,6 +106,17 @@ class SimulatorStack(cdk.Stack):
         )
         self.task_role.add_to_policy(
             iam.PolicyStatement(actions=["dynamodb:PutItem"], resources=[self.log_table.table_arn])
+        )
+        # Story 4.1: set effective_end on a cancelled injection's log row, and nothing else.
+        self.task_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["dynamodb:UpdateItem"],
+                resources=[self.log_table.table_arn],
+                conditions={
+                    "ForAllValues:StringEquals": {"dynamodb:Attributes": ["pk", "effective_end"]},
+                    "StringEqualsIfExists": {"dynamodb:ReturnValues": "NONE"},
+                },
+            )
         )
 
         self.log_group = logs.LogGroup(
