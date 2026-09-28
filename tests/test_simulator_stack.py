@@ -114,6 +114,7 @@ def test_task_role_is_exactly_ad17(synthesized):
     assert conditioned[0]["Condition"] == {
         "ForAllValues:StringEquals": {"dynamodb:Attributes": ["pk", "effective_end"]},
         "StringEqualsIfExists": {"dynamodb:ReturnValues": "NONE"},
+        "Null": {"dynamodb:Attributes": "false"},
     }
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
     assert len(grants) == len(statements) == 4

@@ -115,6 +115,7 @@ class SimulatorStack(cdk.Stack):
                 conditions={
                     "ForAllValues:StringEquals": {"dynamodb:Attributes": ["pk", "effective_end"]},
                     "StringEqualsIfExists": {"dynamodb:ReturnValues": "NONE"},
+                    "Null": {"dynamodb:Attributes": "false"},
                 },
             )
         )

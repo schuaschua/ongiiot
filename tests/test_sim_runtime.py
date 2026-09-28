@@ -358,13 +358,37 @@ def test_cancel_after_apply_sets_effective_end_once():
     assert len(log.updates) == 1  # once, not on every poll
 
 
-def test_effective_end_conditional_failure_is_ignored():
+def test_effective_end_conditional_failure_retries_within_grace_then_gives_up():
     inj = leak()
     stop = datetime.fromtimestamp(T0 + 3, UTC)
     row = {"pk": "01LEAK", "effective_end": "already"}
-    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", stop)], log=FakeTable([row]))
+    from sim.control import ControlPoller
+
+    log = FakeTable([row])
+    poller = ControlPoller(FakeTable([to_item(inj), to_item(cancel_of(inj, "01CANC", stop))]), log, F)
+    for t in range(T0 + 5, T0 + 30, 5):
+        poller.poll(t)
+    assert len(log.updates) == 5 and log.items["01LEAK"]["effective_end"] == "already"  # retried each poll
+    poller.poll(T0 + 3 + 601)  # past the 10-minute grace: last attempt, then given up
+    poller.poll(T0 + 3 + 700)
+    assert len(log.updates) == 6
+
+
+def test_effective_end_generic_error_retries_then_succeeds():
+    inj = leak()
+    sim, _, ctrl, log, _ = make(control=[inj])
+    sim.run(max_ticks=3)
+    ctrl.items["01CANC"] = to_item(cancel_of(inj, "01CANC", datetime.fromtimestamp(T0 + 3, UTC)))
+    log.fail_updates = 1
+    sim.run(max_ticks=15)
+    assert len(log.updates) == 2 and "effective_end" in log.items["01LEAK"]
+
+
+def test_effective_end_older_than_a_day_is_skipped():
+    inj = leak(start=T0 - 2 * 86400)
+    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", datetime.fromtimestamp(T0 - 2 * 86400 + 60, UTC))])
     sim.run(max_ticks=10)
-    assert log.items["01LEAK"]["effective_end"] == "already" and len(log.updates) == 1
+    assert log.updates == []
 
 
 def test_cancel_before_apply_writes_no_log_row():

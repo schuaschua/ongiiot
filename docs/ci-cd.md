@@ -101,7 +101,7 @@ SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject li
 SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject list --json --recent-min 240
 ```
 
-When a cancel ends an injection that has already applied, the simulator sets `effective_end` once on that injection's `injection-log-<stage>` row; the planned `end_at` stays. An injection cancelled before it applied has no row.
+When a cancel ends an injection that has already applied, the simulator sets `effective_end` once on that injection's `injection-log-<stage>` row; the planned `end_at` stays. An injection cancelled before it applied has no row. This needs the task role's `dynamodb:UpdateItem` grant on that table (Story 4.1): redeploy `SimulatorStack-<stage>` before `effective_end` writes succeed (until then they fail, are logged and retried; the stream is unaffected).
 
 - **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
 - **Shared network:** all stages run in one VPC, `SharedNetworkStack` (fixed name, no stage suffix). The first stage deploy creates it, because every `SimulatorStack-<stage>` depends on it; later deploys reuse it. Deleting a stage leaves it in place.

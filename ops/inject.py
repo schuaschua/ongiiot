@@ -42,10 +42,11 @@ from facility.control import (
 from facility.model import DEFAULT_PATH, FacilityError, load
 
 MAX_MINUTES = 7 * 24 * 60
+MAX_RECENT_MIN = 365 * 24 * 60
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="inject", description="Create or cancel simulator injections (sim_control).")
+    p = argparse.ArgumentParser(prog="inject", description="Create, cancel or list simulator injections (sim_control).")
     p.add_argument("--stage", help="stage (default: $STAGE or poc)")
     p.add_argument("--table", help="sim_control table name (default: $SIM_CONTROL_TABLE)")
     sub = p.add_subparsers(dest="command", required=True, metavar="{" + ",".join((*INJECTION_TYPES, "cancel", "list")) + "}")
@@ -118,8 +119,8 @@ def _scan(table: Any) -> list[Mapping[str, Any]]:
 
 
 def _list(args: argparse.Namespace, facility: Any, table: Any, now: datetime) -> int:
-    if not (math.isfinite(args.recent_min) and args.recent_min >= 0):
-        return _error("--recent-min must be >= 0")
+    if not (math.isfinite(args.recent_min) and 0 <= args.recent_min <= MAX_RECENT_MIN):
+        return _error(f"--recent-min must be >= 0 and at most {MAX_RECENT_MIN} (one year)")
     parsed = []
     for raw in _scan(table):
         try:
@@ -130,7 +131,11 @@ def _list(args: argparse.Namespace, facility: Any, table: Any, now: datetime) ->
     recent = timedelta(minutes=args.recent_min)
     rows = []
     for inj, planned_end in windows(parsed):
-        if inj.start_at > now:
+        if inj.end_at <= inj.start_at:
+            if now - inj.end_at > recent:
+                continue
+            state = "cancelled"  # cancelled before it started
+        elif inj.start_at > now:
             state = "scheduled"
         elif now < inj.end_at:
             state = "active"
@@ -148,6 +153,7 @@ def _list(args: argparse.Namespace, facility: Any, table: Any, now: datetime) ->
                 "planned_end": format_ts(planned_end),
                 "effective_end": format_ts(inj.end_at),
                 "state": state,
+                "cancelled": inj.end_at < planned_end,
             }
         )
     if args.json:
@@ -157,8 +163,8 @@ def _list(args: argparse.Namespace, facility: Any, table: Any, now: datetime) ->
     if not rows:
         print("no injections")
         return 0
-    cols = ["id", "type", "pipe", "measurement", "start", "effective_end", "planned_end", "state"]
-    cells = [[str(r[c] if r[c] is not None else "-") for c in cols] for r in rows]
+    cols = ["id", "type", "pipe", "measurement", "start", "effective_end", "planned_end", "state", "cancelled"]
+    cells = [[("yes" if r[c] else "no") if c == "cancelled" else str(r[c] if r[c] is not None else "-") for c in cols] for r in rows]
     widths = [max(len(c), *(len(row[i]) for row in cells)) for i, c in enumerate(cols)]
     for line in [cols, *cells]:
         print("  ".join(v.ljust(w) for v, w in zip(line, widths, strict=True)).rstrip())

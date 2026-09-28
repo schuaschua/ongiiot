@@ -70,6 +70,7 @@ class FakeTable:
         self.writes = 0
         self.fail_scans = 0  # the next N scans raise
         self.fail_puts = 0  # the next N puts raise
+        self.fail_updates = 0  # the next N updates raise
         self.updates: list[dict] = []  # every update_item call's kwargs
 
     def _maybe_fail(self, attr: str) -> None:
@@ -107,6 +108,7 @@ class FakeTable:
         self.updates.append(
             {"Key": Key, "UpdateExpression": UpdateExpression, "ConditionExpression": ConditionExpression}
         )
+        self._maybe_fail("fail_updates")
         attr = UpdateExpression.removeprefix("SET ").split(" = ")[0]
         assert ConditionExpression == f"attribute_exists(pk) AND attribute_not_exists({attr})"
         item = self.items.get(Key["pk"])
