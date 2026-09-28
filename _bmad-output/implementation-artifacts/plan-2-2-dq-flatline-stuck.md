@@ -3,7 +3,7 @@ title: 'Story 2.2: Flag flatlined and stuck sensors'
 type: 'feature'
 ticket: 'OG-11'
 created: '2026-09-29'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -84,7 +84,7 @@ context:
 - [x] `tests/test_dq_detectors.py` -- every matrix row except Live, on synthetic windows, plus the "Normal" row on real simulator physics output. -- matrix.
 - [x] `tests/test_detect_handler.py` -- a run-level test: a railed alias and a stuck alias give the expected `_dq` / `_dq_fail`, and the other 142 sensors stay at 1.0/"". -- end to end.
 - [x] `docs/ci-cd.md` §7 -- what each check means and how to try it with `ops/inject.py`. -- operability.
-- [ ] Live (after green): deploy `poc-dj` with the simulator on and wait about 16 min for a full window.
+- [x] Live (after green): deploy `poc-dj` with the simulator on and wait about 16 min for a full window.
   - Inject `dq_flatline` on P-003 `flow_in` and `dq_stuck` on P-015 `temperature`, each for 10 minutes.
   - After two or three runs, read the four derived values and a sample of untouched ones.
   - Record the results; cancel the injections; deploy with `simulator=off`.
@@ -107,6 +107,11 @@ context:
 - `tests/test_detect_handler.py`'s synthetic healthy store now varies every second (it was a constant `1.0`, which `dq_stuck` now rightly flags).
 
 - **After review (round 1):** a non-GOOD or valueless sample ends a run (trailing non-GOOD samples are skipped back to the last GOOD one); a gap over 2 x the contract sample period (2 s without a rate) splits a run; railed is one-sided (`<= min + tol`, `>= max - tol`), so over/under-range values count; `0 <= rel_tol < 0.5`; `min_run_s <= full_s < window_len_s`; `dq_stuck.check_tunables` also validates `dq_flatline.rel_tol`; duplicate detector ids fail the cold start; `check_tunables` is on both protocols; empty units are omitted from explanations.
+
+- Live check (2026-09-29 01:07–01:12 +08, `poc-dj`, deploy run 36454544589):
+  - `dq_flatline` was injected on P-003 `flow_in` and `dq_stuck` on P-015 `temperature` at 17:07:41Z.
+  - At the 17:09 window end (80 s of fault in the window): P-003 `flow_in_dq` = 0.0 / `dq_flatline`; P-015 `temperature_dq` = 0.0 / `dq_stuck`; the other 142 sensors = 1.0 / "".
+  - Injections cancelled; simulator and detection switched off with the reviewed code (`ab465c7`).
 
 ## Plan Change Log
 
