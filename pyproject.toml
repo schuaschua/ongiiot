@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Pipe Integrity Streaming POC"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "boto3>=1.43.103",
+    "python-ulid>=4.0.1",
     "pyyaml",
 ]
 
@@ -13,7 +15,6 @@ infra = [
     "constructs",
 ]
 dev = [
-    "boto3",
     "pytest",
 ]
 

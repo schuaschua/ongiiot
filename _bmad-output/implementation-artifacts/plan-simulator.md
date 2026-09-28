@@ -3,13 +3,14 @@ title: 'Simulator: live facility stream with fault and leak injection'
 type: 'feature'
 ticket: ''
 created: '2026-09-28'
-status: 'draft'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
+baseline_revision: '9ecd067f12ba6fab0ea63d16cf0ce8e648c0da96'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-og-iiot-2026-09-28/ARCHITECTURE-SPINE.md'
 ---
@@ -85,3 +86,42 @@ context:
 **Commands:**
 - `uv run pytest -q` -- expected: all tests pass, including the existing 92.
 - `uv run python -m ops.inject --help` -- expected: usage printed, exit 0.
+
+## Review Triage Log
+
+**Pass 1** (lenses: blind-hunter, edge-case-hunter, verification-gap, intent-alignment). Verdicts: high 0, medium 9, low 17, false 3, maybe-false 0. There were no intent_gap or bad_plan entries, so the patch and defer entries are processed.
+
+| # | Lens | Finding | Verdict | Route | Evidence / action |
+|---|------|---------|---------|-------|-------------------|
+| 1 | blind, edge | `resolve()` can extend an injection when the cancel ends later than the injection | medium | patch | `control.py:230` replaces `end_at` unconditionally. Use `min(inj.end_at, cancel_end)`. |
+| 2 | blind, edge | One failed batch drops the rest of the flush | medium | patch | `writer.py:121-122` exits the loop on the first `WriteError`. Send every batch, then raise one aggregate error. |
+| 3 | blind, edge | Retries stack (boto 5 attempts plus the writer's 6) and block the 1 Hz loop for many seconds | medium | patch | `main.py:227` and `writer.py:134,144`. Keep one retry layer and cap the writer's total backoff per flush at 1 s or less. |
+| 4 | blind, edge | `ops/inject` gives a traceback on AWS errors and on `--minutes inf` or huge values | medium | patch | `inject.py:93,119` only catch `ControlError`, and the minutes check allows inf. Map `ClientError` to `_error`; require minutes finite and within a maximum. |
+| 5 | blind, edge | `ops/inject` ignores `FACILITY_PATH` | low | patch | `inject.py` always loads the default. Direct fix: honour it. |
+| 6 | blind, edge | A non-string `type` or `supersedes`, or an empty `supersedes`, crashes the poller or counts as a cancel | medium | patch | The `TypeError` escapes the `ControlError` handler, so every scan crash-loops. Add type checks in validation. |
+| 7 | blind, edge | Cancelling an injection that already expired or was already cancelled is accepted | low | reject | Harmless once #1 is fixed; the guard would add branches. |
+| 8 | blind, edge | `injection_log` keeps the planned `end_at` after a cancel | medium | defer | Real, but the fix adds an update path. The log is only used for demo scoring. |
+| 9 | edge | A clamped leak rate is logged as requested | low | reject | Only happens above 90% of flow. Unlikely. |
+| 10 | edge | A log write that keeps failing is never retried after the window ends | low | reject | Needs a sustained DynamoDB outage. |
+| 11 | edge | A huge `per_min` overflows and crash-loops | low | reject | An absurd input; it would need a cap. |
+| 12 | edge | A large backwards clock jump delays SIGTERM | low | reject | Unlikely on Fargate. |
+| 13 | blind, edge | Non-ResourceNotFound `DescribeTimeSeries` errors give a traceback | low | patch | Direct fix: wrap in `StartupError` so the process exits 3 with a JSON log line. |
+| 14 | edge | `physics.py:233` divides by zero if the baseline flow is 0 | low | patch | Direct guard, as on the neighbouring line. |
+| 15 | edge | The methane plateau cap can go negative | low | patch | Direct fix: `max(0.0, ...)`. |
+| 16 | edge | Non-canonical fractional timestamps are accepted | low | reject | `strptime` `%f` parses them correctly. Harmless. |
+| 17 | blind, impl | `boto3` is not a runtime dependency | medium | patch | `sim/main.py` and `ops/inject.py` import it. Move it to `dependencies`. |
+| 18 | vgap | Flush failure → stream continues is untested | medium | patch | Add a runtime test with a failing fake. |
+| 19 | vgap, blind | Scan failure keeping the current injections is untested | medium | patch | Add a runtime test whose scan raises. |
+| 20 | vgap | Retry of a transient `injection_log` failure is untested | low | patch | Add the test. |
+| 21 | vgap | The default `dq_drift` rate is untested | low | patch | Add `test_default_drift_rate`. |
+| 22 | blind | `sim_control` grows without limit and is fully scanned | low | reject | Tiny over a 4-day POC. |
+| 23 | blind | No `list` command in `ops/inject` | low | defer | A usability gap for demo operations; new public surface. |
+| 24 | blind | `JsonFormatter` fields overwrite reserved keys | low | patch | Direct fix: reserved keys win. |
+| 25 | blind | Duplicated `_error_code`; dead `effective_end` | low | patch | Delete the dead `effective_end`. The duplication is tolerable. |
+| 26 | blind | Tests missing for overlapping injections, bad env values, and a 24 h run staying in contract | low | patch | Add only the 24 h in-contract test. It is cheap, and the ambient peak is otherwise unchecked. |
+| 27 | blind | Plan frontmatter claims lenses ran | false | reject | The review was in progress when the lens read the plan. |
+| 28 | intent | Real-AWS and live-time surfaces are not exercised | false | reject | The human deferred deployment; fakes only by the frozen boundary. |
+| 29 | intent | Detector-surface detectability is untested | false | reject | Detection is a later build; the simulator-side bands are the agreed proxy. |
+| 30 | orchestrator | Patch #3 turned off SDK retries on the only SiteWise client, so a throttled describe of any of the 144 aliases at startup would refuse to start | medium | patch | Fixed directly: `_aws` returns a separate startup client with standard retries (5 attempts), used only by `check_aliases`. The writer client keeps no SDK retries. |
+
+Post-patch verification: `uv run pytest -q` 191 passed; `cdk synth -c stage=poc-dj` exit 0; `python -m ops.inject --help` exit 0.

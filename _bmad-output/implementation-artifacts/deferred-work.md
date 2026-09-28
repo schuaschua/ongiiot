@@ -10,3 +10,9 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-simulator.md`
   summary: Package and deploy the simulator — sim/Dockerfile (python:3.14-slim from uv.lock) and a per-stage CDK SimulatorStack with sim_control and injection_log tables, a public-subnet VPC without NAT, an ECS Fargate service (desired 1) and the AD-17 task role, depending on SiteWiseAssetsStack.
   evidence: Split from the simulator plan at the token gate (about 1,900 tokens against the 1,600 target); the simulator runtime is testable locally without it.
+- source_plan: `_bmad-output/implementation-artifacts/plan-simulator.md`
+  summary: Record the effective (cancelled) end of an injection in injection_log, not only the planned end_at, so demo scoring uses true windows.
+  evidence: log_first_apply writes end_at once, at first apply; a later cancel item shortens the real window, but the log keeps the planned end.
+- source_plan: `_bmad-output/implementation-artifacts/plan-simulator.md`
+  summary: Add `ops/inject list` to show active and recent injections with their IDs, so an operator can cancel without the original output.
+  evidence: cancel needs the ULID printed at creation; without it the operator must scan DynamoDB by hand to stop a running leak.
