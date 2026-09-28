@@ -55,3 +55,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-2-4-dq-overview.md`
   summary: Have the owner check the overview's readability in a browser (three tiles per pipe, three pipes per row) and adjust the tile sizes if cramped.
   evidence: Layout verified structurally and via API only; no visual render check was possible overnight.
+- source_plan: `_bmad-output/implementation-artifacts/plan-3-3-incidents.md`
+  summary: Add a TTL or archive for closed incident history (C# items) and avoid reading a pipe's full history every run.
+  evidence: Each run queries every pipe's full partition; cost grows with history (fine at POC scale).

@@ -234,7 +234,7 @@ After pass 1 has scored every sensor, pass 2 runs the leak checks on the same wi
 
 Calibration on the simulator (`tests/test_leak_detectors.py`): normal output never comes close. Over 4 simulated days (24 pipes at 1 Hz, with the trailing 60 s evaluated once a minute, as the runs do) the mean loss fraction peaked at 0.16% (min 2%), methane at 0.6 ppmv above the peer median (min 30 ppmv) and the relative `pressure_out` drop at 0.4% (corroboration 0.6%). No leak finding appears in 4 x 30 consecutive one-minute runs at different times of day and seeds. The default injected leak (10% of the pipe's mean flow, methane rising toward 600 ppmv with a 20 s time constant) scores confidence 1.0 on both checks once it has been in the window for 60 s, and at least 0.8 by the second run after it enters the window.
 
-**Where to see findings until Story 3.3.** No incident, email or dashboard shows them yet. They appear only in the run's summary log line, as `"findings":[{"detector":…,"pipe":…,"confidence":…,"explanation":…,"evidence_aliases":[…]}]` (confidence to 3 decimals; empty when there are none). `"suppressed":[{"detector":…,"pipe":…,"reason":…}]` lists each pipe where a check could not run because a sensor it needs is untrusted (for example `flow_out untrusted (dq 0.00 < dq_min 0.5)`), so a silenced check is visible. `detectors` and `ran_ok` list the leak checks too; a leak check that failed (or returned a malformed finding) is logged on its own error line and left out of `ran_ok`.
+**Where to see findings.** Every finding joins its pipe's incident (see "Incidents and alert state" below). The run's summary log line also lists pass 2's findings, as `"findings":[{"detector":…,"pipe":…,"confidence":…,"explanation":…,"evidence_aliases":[…]}]` (confidence to 3 decimals; empty when there are none). `"suppressed":[{"detector":…,"pipe":…,"reason":…,"scope":…}]` lists each pipe where a check could not run because a sensor it needs is untrusted (`"scope":"detector"`) or where only some of its features were skipped (`"scope":"feature"`, `outlier_peer`) (for example `flow_out untrusted (dq 0.00 < dq_min 0.5)`), so a silenced check is visible. `detectors` and `ran_ok` list the leak checks too; a leak check that failed (or returned a malformed finding) is logged on its own error line and left out of `ran_ok`.
 
 **If any pass-1 (`dq_*`) check fails in a run, pass 2 is skipped for that run**: the failed check's sensors would score 1.0 and could make a railed sensor look like a leak. The run logs an ERROR line `pass 2 skipped: pass-1 detector(s) failed` naming the failed checks, and the summary shows `"pass2_skipped":true` with no findings. The next run tries again.
 
@@ -257,7 +257,7 @@ Known limits:
 - The pressure corroboration compares the last 60 s with the rest of the 15-minute window, so a leak older than the window is no longer cited as corroborated (both checks still fire).
 - A flow meter drifting low looks like a loss until `dq_drift` marks it untrusted (about 5 minutes). A drift of 2% of flow within that time would raise `leak_mass_balance`.
 - A methane rise shared by the whole peer group (weather, a flare) moves the median too and is not reported. For the same reason, leaks on up to 3 pipes of one 6-pipe group are each found, but on 4 or more they hide each other.
-- The checks only report: the pipe's `alert_state`, incidents and email come with Stories 3.3 and 3.4.
+- The checks only report; incidents and `alert_state` are described below, and email comes with Story 3.4.
 
 ### Outlier check (pass 2)
 
@@ -282,7 +282,7 @@ Unlike its peers in fg-cs-10to15 over the last 60 s: methane_ppm 589.1 vs median
 
 The flagged features are listed worst first, each with the sensors behind it (for a ratio), the pipe's value, the median of its peers, the peers compared and z (the sign says above or below the peers). A peer left out of a feature is named after its peer list with the reason (`P-008 left out: methane_ppm untrusted`, `too little data`, `unit mismatch`, `flow_in too low`). If the pipe's own sensors are untrusted, the features that need them are skipped and the explanation ends with, for example, `pressure_ratio was not scored because pressure_out was excluded as untrusted (dq 0.20 < dq_min 0.5)`, naming every untrusted sensor of the feature; the other features are still scored. Every feature skipped on a pipe also appears in the summary's `suppressed` list, even when no finding is made: `{"detector":"outlier_peer","pipe":"P-007","reason":"pressure_ratio skipped: pressure_out untrusted (dq 0.00 < dq_min 0.5)"}`, or `flow_ratio skipped: flow_in too low`, `methane_ppm skipped: only 3 pipes with data`, `flow_ratio skipped: unit mismatch`, `temperature skipped: too little data` (several reasons are joined with `; `).
 
-Findings go to the run summary line with the leak findings (`"findings":[{"detector":"outlier_peer",…}]`), and nowhere else until Stories 3.3 and 3.4. On a leak, the outlier finding names the same pipe as the leak findings, so from Story 3.3 it joins the same incident (one OPEN incident per pipe, AD-6) as another contributing detector rather than raising a second alert.
+Findings go to the run summary line with the leak findings (`"findings":[{"detector":"outlier_peer",…}]`) and into the pipe's incident. On a leak, the outlier finding names the same pipe as the leak findings, so it joins the same incident (one OPEN incident per pipe, AD-6) as another contributing detector rather than raising a second alert.
 
 Calibration on the simulator (`tests/test_outlier_peer.py`): over 6 x 30 consecutive one-minute runs of normal output (seeds 0, 1, 2, 3, 5, different times of day, all 24 pipes) the largest |z| was 2.3 (`pressure_ratio`), 1.5 (`temperature`), 0.5 (`methane_ppm`) and 0.3 (`flow_ratio`), against `min_z` 4. The static steady-state spread between peers dominates `pressure_ratio` and `temperature`; across 300 seeds (steady state plus the daily temperature cycle, without noise) it stays below |z| 2.6 and 1.9 with these floors. A default leak on P-007 scores 0.7 after 5 s in the window and 1.0 from about 10 s, so always by the second run after it enters the window (by then `methane_ppm` is at z 330 or more and `flow_ratio` at |z| 17 or more), and no other pipe of the group is flagged (their largest |z| was 1.9). The leak's `pressure_ratio` shift (about 0.01) is within the normal spread between flare-header peers, so it is rarely one of the flagged features.
 
@@ -295,7 +295,51 @@ Known limits:
 - A sensor fault the `dq_*` checks have not yet caught (for example the first minutes of a drift) can make its pipe an outlier until the sensor becomes untrusted.
 - Peers differ by design (each pipe has its own steady state), so the floors are set above that spread. A real pipe that has always run a little differently from its peers is not flagged; the check finds changes large compared with normal peer spread, not small standing offsets.
 
-The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
+### Incidents and alert state
+
+After both passes, every finding of the run, `dq_*` included, joins its pipe's incident in the DynamoDB table `incidents-<stage>` (`DetectionStack-<stage>`, output `IncidentsTableName`; retained, with point-in-time recovery, for `poc`; deleted with a developer stage). Only `detect/adapters/incidents.py` writes it; the rules are in `detect/core/incident_rules.py` (AD-6, AD-12).
+
+- **One OPEN incident per pipe.** Its slot is the item `pk=<pipe_id>, sk=OPEN`, created only if absent, so two runs can never make two. A later finding on the pipe updates the same incident: `detectors.<id>` gets the latest confidence, explanation and version, `quiet_runs` goes back to 0, the evidence aliases are merged, `evidence_to` moves to the latest window end (`evidence_from` stays at the first). The incident's `confidence` is the highest of its detectors'.
+- **Closing.** A detector counts one quiet run when it ran OK in that run (it is in `ran_ok`), was not suppressed as a whole on the pipe (a `suppressed` entry with `"scope":"detector"`; a skipped `outlier_peer` feature, `"scope":"feature"`, does not block it) and made no finding there. When every detector of the incident has `quiet_runs_to_close` (5) quiet runs, one transaction deletes the slot and writes the history item `sk=C#<incident_id>` with `status=CLOSED`, `closed_reason=quiet` and `closed_at`. So a leak's incident closes about 5 minutes after its last finding. A detector that is suppressed on the pipe or fails keeps its count, so the incident stays open while it cannot be checked. When pass 2 is skipped, the `dq_*` checks that ran OK still count; the pass-2 checks do not.
+- **Source outage.** When at least half of the facility's raw aliases have no samples in the window (simulator start or stop, an ingest outage), the run logs `{"msg":"source outage",…}` and the summary shows `"source_outage":true`. In that run `dq_gap` findings do not feed incidents and no detector counts a quiet run; the `_dq` / `_dq_fail` values are still written. So a simulator start does not open 24 incidents. Other findings still join as usual.
+- **Reopening.** A new finding within `reopen_grace_s` (600 s) of the pipe's latest quiet close restores that incident (same `incident_id`, `notified_at` kept) instead of opening a new one; the `C#` item becomes the `OPEN` slot again. The restored incident keeps its previous detectors, their confidences and its evidence: its `confidence` is still the highest over all its detectors (AD-6, no decay), so it can read higher than the finding that reopened it. Incidents closed by a reset (`closed_reason=reset`, Story 4.2) never reopen.
+- **Replays.** Every item carries `last_run` (the run ID) and `config_hash`, and every write is conditional on `last_run` being older than the run. A run whose ID is at or before any stored `last_run` of a pipe writes nothing to that pipe's incidents and does not write that pipe's `alert_state` / `alert_summary` either (they would overwrite the history at that window end with the current state). If a write loses a race twice, the pipe is listed in the summary's `incident_conflicts` and left to the next run.
+- **Run order and failures.** Each run writes `_dq` / `_dq_fail`, then the incidents (pipe by pipe), then `alert_state` / `alert_summary`. A DynamoDB error other than a lost condition fails the invocation part way: pipes already updated stay updated, that run's alert values are not written, and the next run (a new run ID) completes the rest.
+
+After the incident step, every run writes two derived properties for every pipe at the window end (AD-13): `derived/alert_state` (INTEGER: the number of detectors in the OPEN incident, `0` if none) and `derived/alert_summary` (STRING, at most 1024 bytes: `{"incident_id":…,"confidence":…,"detectors":[{"id":…,"c":…}],"evidence":[…]}` with confidences to 2 decimals, or `{}`; `evidence` is dropped first if it would not fit). The summary line adds `source_outage`, `incident_ops` (`opened`, `updated`, `closed`, `reopened`: each a list of `{"pipe","incident_id"}`), `incident_conflicts` and `alert_state` (only pipes with an OPEN incident).
+
+A sensor fault opens an incident too (for example `dq_flatline` on one sensor, or `dq_gap` on a sensor that goes silent while most others report), and closes 5 quiet runs after the sensor recovers.
+
+To read the table and a pipe's alert state on a developer stage:
+
+```bash
+export STAGE=poc-dj
+# The OPEN incidents (one per pipe at most):
+aws dynamodb scan --region ap-southeast-1 --table-name incidents-$STAGE \
+  --filter-expression 'sk = :o' --expression-attribute-values '{":o":{"S":"OPEN"}}' \
+  --query 'Items[].{pipe:pk.S,id:incident_id.S,conf:confidence.N,detectors:detectors.M,last_run:last_run.S}'
+# Everything for one pipe (the OPEN slot and its closed history, C#<incident_id>):
+aws dynamodb query --region ap-southeast-1 --table-name incidents-$STAGE \
+  --key-condition-expression 'pk = :p' --expression-attribute-values '{":p":{"S":"P-007"}}'
+# Alert state and summary of P-007 (P-007 is in train1):
+for p in alert_state alert_summary; do
+  aws iotsitewise get-asset-property-value --region ap-southeast-1 \
+    --property-alias "/$STAGE/lng1/train1/P-007/derived/$p" --query 'propertyValue.value' --output json
+done
+# The run's incident changes:
+aws logs tail /aws/lambda/detection-$STAGE --region ap-southeast-1 --since 10m --format short | cut -d' ' -f2- \
+  | jq -Rr 'fromjson? | select(.incident_ops) | [.run_id, (.incident_ops|tojson), (.alert_state|tojson), .source_outage] | @tsv'
+```
+
+With the leak injection above, P-007 gets one OPEN incident with `leak_mass_balance`, `leak_methane_rise` and `outlier_peer` about 2 to 3 minutes after the injection, and `alert_state` 3. After cancelling, the findings stop within 2 to 4 minutes and the incident closes 5 runs later with `closed_reason` `quiet`; `alert_state` goes back to `0` and `alert_summary` to `{}`.
+
+Known limits:
+
+- There is no email yet (Story 3.4) and no reset (Story 4.2); to clear incidents on a developer stage, wait for them to close or delete the items by hand.
+- If a detector is suppressed on a pipe for a long time (for example a sensor stays untrusted), its entry in that pipe's incident never counts quiet runs, so the incident stays open until the detector can check the pipe again.
+- Each run queries every pipe's items (one `Query` per pipe, with its closed history), which is fine for the POC's 24 pipes and short history.
+
+The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). On DynamoDB it holds only `Query`, `PutItem`, `DeleteItem` and `TransactWriteItems` on `incidents-<stage>` (no `Scan`; the table name reaches the Lambda as `INCIDENTS_TABLE`). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
 ## What this does and does not protect
 

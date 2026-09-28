@@ -147,6 +147,7 @@ def test_untrusted_sensor_skips_only_its_feature_and_says_so():
             "detector": "outlier_peer",
             "pipe": "P-007",
             "reason": "pressure_ratio skipped: pressure_out untrusted (dq 0.20 < dq_min 0.5), pressure_in untrusted (dq 0.10 < dq_min 0.5)",
+            "scope": "feature",
         }
     ]
     # dq exactly at dq_min is trusted: the railed pressure_out is then scored and flagged.
@@ -159,7 +160,7 @@ def test_untrusted_sensor_alone_gives_no_finding_but_is_reported_suppressed():
     fw = trusted(synthetic({("P-007", "pressure_out"): lambda i: 1.0e6}), {("P-007", "pressure_out"): 0.0})
     assert outliers(fw) == []
     assert handler._suppressed(OP, fw, T) == [
-        {"detector": "outlier_peer", "pipe": "P-007", "reason": "pressure_ratio skipped: pressure_out untrusted (dq 0.00 < dq_min 0.5)"}
+        {"detector": "outlier_peer", "pipe": "P-007", "reason": "pressure_ratio skipped: pressure_out untrusted (dq 0.00 < dq_min 0.5)", "scope": "feature"}
     ]
 
 
@@ -302,7 +303,7 @@ def test_non_finite_dq_is_untrusted_in_the_summary_too():
     """The handler's suppressed list uses the detector's trust rule: a NaN dq is untrusted in both."""
     fw = trusted(synthetic(), {("P-007", "temperature"): float("nan")})
     assert handler._suppressed(OP, fw, T) == [
-        {"detector": "outlier_peer", "pipe": "P-007", "reason": "temperature skipped: temperature untrusted (dq none < dq_min 0.5)"}
+        {"detector": "outlier_peer", "pipe": "P-007", "reason": "temperature skipped: temperature untrusted (dq none < dq_min 0.5)", "scope": "feature"}
     ]
 
 

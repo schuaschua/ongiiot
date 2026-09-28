@@ -9,15 +9,21 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    the no-sample gap rule (one ``dq_gap`` finding per empty alias).
 4. Pass 2: the ``leak_*`` detectors (``leak_mass_balance``: pipe; ``leak_methane_rise``: facility) and
    ``outlier_peer`` (facility) on the dq-annotated window (``PipeMeta.dq`` filled); they exclude sensors with ``dq < tunables.dq_min``.
-   Their findings go to the summary line only (incidents and email come with Stories 3.3 and 3.4). If any
-   pass-1 detector failed, its sensors would wrongly score 1.0, so pass 2 is skipped for that run (an ERROR
-   line and ``pass2_skipped: true``).
+   If any pass-1 detector failed, its sensors would wrongly score 1.0, so pass 2 is skipped for that run
+   (an ERROR line and ``pass2_skipped: true``).
 5. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
+5b. Incidents (AD-6, AD-12, ``detect/adapters/incidents.py``): every finding of both passes (``dq_*`` included,
+   with the gap rule's) joins its pipe's one OPEN incident. A detector counts as quiet on a pipe only if it ran
+   OK and covered the pipe (not suppressed as a whole for it). Source-outage guard: when at least half of the raw
+   aliases have no samples, ``dq_gap`` findings do not feed incidents and no detector counts as quiet
+   (``source_outage: true``). Then ``alert_state`` (INTEGER) and ``alert_summary`` (JSON STRING) at ``window_end``
+   for every pipe except those the replay guard left untouched (AD-13).
 6. Log one JSON summary line, with pass 2's ``findings: [{detector, pipe, confidence, explanation,
-   evidence_aliases}]``, ``suppressed: [{detector, pipe, reason}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
-   ``pass2_skipped``.
+   evidence_aliases}]``, ``suppressed: [{detector, pipe, reason, scope}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
+   ``pass2_skipped``, ``source_outage``, ``incident_conflicts`` (pipes left to the next run), ``incident_ops`` (``opened``/``updated``/``closed``/``reopened``: ``[{pipe, incident_id}]``)
+   and ``alert_state`` (pipe -> detectors in its OPEN incident, pipes with none left out).
 
-Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
+Environment: ``STAGE`` (required), ``INCIDENTS_TABLE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
 ``reader.DEFAULT_STRATEGY``),
 ``FACILITY_PATH`` (default: the bundled ``facility.yaml``). The facility model, pipe metadata and
 SiteWise clients are built once per cold start; each registered detector's tunables are checked then,
@@ -37,8 +43,9 @@ from types import MappingProxyType
 from typing import Any
 
 from detect.adapters.derived_writer import DerivedWriter
+from detect.adapters.incidents import Incidents
 from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
-from detect.core import dq_score
+from detect.core import dq_score, incident_rules
 from detect.core.detectors import PASS1, PASS2
 from detect.core.detectors._pass2 import dq_min, dq_of, trusted, untrusted_reason
 from detect.core.models import Contract, Detector, FacilityWindow, Finding, PipeMeta, PipeWindow, Tunables, Window
@@ -48,6 +55,7 @@ from facility.model import DEFAULT_PATH, Facility, load
 PASS1_DETECTORS: Sequence[Detector] = PASS1
 PASS2_DETECTORS: Sequence[Detector] = PASS2
 KINDS = ("pipe", "facility")
+SOURCE_OUTAGE_FRAC = 0.5  # at least this share of raw aliases silent in a window = a source outage
 
 
 def check_detectors(detectors: Sequence[Detector], tunables: Tunables) -> None:
@@ -65,7 +73,9 @@ def check_detectors(detectors: Sequence[Detector], tunables: Tunables) -> None:
 
 
 def iso(t: datetime) -> str:
-    """``YYYY-MM-DDTHH:MM:SS.sssZ`` (AD-9 stored strings)."""
+    """``YYYY-MM-DDTHH:MM:SS.sssZ`` (AD-9 stored strings); a naive ``datetime`` is refused."""
+    if t.tzinfo is None or t.utcoffset() is None:
+        raise ValueError(f"datetime must be tz-aware, got {t!r}")
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
 
 
@@ -110,6 +120,26 @@ def dq_aliases(facility: Facility) -> dict[str, tuple[str, str]]:
     }
 
 
+def alert_aliases(facility: Facility) -> dict[str, tuple[str, str]]:
+    """pipe_id -> (``alert_state`` alias, ``alert_summary`` alias)."""
+    return {p.id: (facility.derived_alias(p.id, "alert_state"), facility.derived_alias(p.id, "alert_summary")) for p in facility.pipes}
+
+
+def derived_types(facility: Facility) -> dict[str, str]:
+    """Every derived alias the run may write -> its SiteWise data type (Derived properties v1)."""
+    out = {}
+    for p in facility.pipes:
+        for d in facility.derived_properties():
+            if d.measurement is None or d.measurement in p.sensors:
+                out[facility.derived_alias(p.id, d.name)] = d.type
+    return out
+
+
+def derived_targets(facility: Facility) -> list[str]:
+    """Every derived alias the run may write (the writer's allowed set)."""
+    return sorted(derived_types(facility))
+
+
 @dataclass
 class Runtime:
     facility: Facility
@@ -117,6 +147,8 @@ class Runtime:
     dq_targets: Mapping[str, tuple[str, str]]
     reader: Reader
     writer: DerivedWriter
+    incidents: Incidents
+    alert_targets: Mapping[str, tuple[str, str]]
 
 
 def run(
@@ -187,14 +219,46 @@ def run(
         suppressed += skipped
         ran_ok.append(det.id)
 
-    values: dict[str, float | str] = {}
+    values: dict[str, float | int | str] = {}
     for raw, (dq, failing) in scores.items():
         dq_alias, fail_alias = rt.dq_targets[raw]
-        values[dq_alias] = dq
+        values[dq_alias] = float(dq)
         values[fail_alias] = failing
     t1 = clock()
     written = rt.writer.write(values, end)
     write_s = clock() - t1
+
+    # Incidents (AD-6, AD-12): every finding of any family joins its pipe's incident, then alert state (AD-13).
+    # Source-outage guard: when at least half of the raw aliases are silent (simulator start/stop, ingest outage),
+    # dq_gap findings do not feed incidents and no detector counts as quiet (the dq values above are still written).
+    expected = [a for p in fw.pipes.values() for a in p.aliases.values()]
+    no_data = [a for a in expected if not fw.window.series.get(a)]
+    outage = bool(expected) and len(no_data) >= SOURCE_OUTAGE_FRAC * len(expected)
+    incident_findings = [*dq_score.with_gap_rule(fw, findings), *leaks]
+    quiet_ok = covered(fw.pipes, ran_ok, suppressed)
+    if outage:
+        log(json.dumps({"stage": f.stage, "run_id": run_id, "msg": "source outage", "aliases_no_data": len(no_data), "aliases": len(expected)}))
+        incident_findings = [x for x in incident_findings if x.detector_id != dq_score.GAP_ID]
+        quiet_ok = {pid: set() for pid in fw.pipes}
+    t2 = clock()
+    applied = rt.incidents.apply(
+        run_id=run_id,
+        now=end,
+        pipes={pid: p.area for pid, p in fw.pipes.items()},
+        findings=incident_findings,
+        quiet_ok=quiet_ok,
+        tunables=tunables,
+        config_hash=f.config_hash(),
+    )
+    alerts: dict[str, float | int | str] = {}
+    for pid, inc in applied.open.items():
+        if pid in applied.replayed:
+            continue  # AD-12: a replay leaves the pipe's incidents and its alert history untouched
+        state_alias, summary_alias = rt.alert_targets[pid]
+        alerts[state_alias] = incident_rules.alert_state(inc)
+        alerts[summary_alias] = incident_rules.alert_summary(inc)
+    written += rt.writer.write(alerts, end)
+    incidents_s = clock() - t2
 
     summary = {
         "stage": f.stage,
@@ -205,6 +269,7 @@ def run(
         "reader_strategy": rt.reader.strategy,
         "read_duration_s": round(read_s, 3),
         "write_duration_s": round(write_s, 3),
+        "incidents_duration_s": round(incidents_s, 3),
         "samples": sum(len(s) for s in fw.window.series.values()),
         "aliases_no_data": sorted(a for a, s in fw.window.series.items() if not s),
         "values_written": written,
@@ -222,10 +287,26 @@ def run(
         ],
         "suppressed": suppressed,
         "pass2_skipped": pass2_skipped,
+        "source_outage": outage,
+        "incident_ops": applied.ops,
+        "incident_conflicts": applied.conflicts,
+        "alert_state": {pid: incident_rules.alert_state(inc) for pid, inc in applied.open.items() if inc is not None},
         "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
     return summary
+
+
+def covered(pipes: Mapping[str, PipeMeta], ran_ok: Sequence[str], suppressed: Sequence[Mapping[str, str]]) -> dict[str, set[str]]:
+    """pipe_id -> the detectors that may count as quiet on it this run: a detector covers a pipe when it ran OK
+    (so failed detectors, and pass-2 detectors in a run whose pass 2 was skipped, never do) and it is not
+    suppressed as a whole on that pipe (``scope == "detector"``). A per-feature skip (``scope == "feature"``,
+    e.g. one ``outlier_peer`` feature) does not block quiet counting."""
+    out = {pid: set(ran_ok) for pid in pipes}
+    for s in suppressed:
+        if s.get("scope") == "detector":
+            out.get(s["pipe"], set()).discard(s["detector"])
+    return out
 
 
 def check_pass2_finding(finding: Finding, known_aliases: Sequence[str]) -> None:
@@ -267,8 +348,9 @@ def check_passes(pass1: Sequence[Detector], pass2: Sequence[Detector], tunables:
 
 
 def _suppressed(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[dict[str, str]]:
-    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (the pass-2 trust
-    rule, ``_pass2.trusted``), plus the features a detector's optional ``skipped(fw, t)`` reports per pipe."""
+    """``{detector, pipe, reason, scope}`` for each pipe where one of ``det.requires`` is untrusted (the pass-2 trust
+    rule, ``_pass2.trusted``; ``scope`` ``detector``: the whole check could not run), or where only features the
+    detector's optional ``skipped(fw, t)`` reports were skipped (``scope`` ``feature``)."""
     floor = dq_min(tunables)
     extra = det.skipped(fw, tunables) if hasattr(det, "skipped") else {}
     out = []
@@ -279,9 +361,10 @@ def _suppressed(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[d
             for m in getattr(det, "requires", ())
             if m in p.aliases and not trusted(p, m, floor)
         ]
+        scope = "detector" if reasons else "feature"
         reasons += extra.get(pid, [])
         if reasons:
-            out.append({"detector": det.id, "pipe": pid, "reason": "; ".join(reasons)})
+            out.append({"detector": det.id, "pipe": pid, "reason": "; ".join(reasons), "scope": scope})
     return out
 
 
@@ -326,15 +409,24 @@ def _pipe_window(fw: FacilityWindow, pipe: PipeMeta) -> PipeWindow:
 _RUNTIME: Runtime | None = None
 
 
-def runtime(env: Mapping[str, str] = os.environ, client: Any = None) -> Runtime:
+def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: Any = None) -> Runtime:
     """Build the per-cold-start runtime once (facility model, metadata, clients)."""
     global _RUNTIME
     if _RUNTIME is None:
         stage = env.get("STAGE")
         if not stage:
             raise ValueError("STAGE is not set")
+        table = env.get("INCIDENTS_TABLE")
+        if not table:
+            raise ValueError("INCIDENTS_TABLE is not set")
         facility = load(env.get("FACILITY_PATH") or DEFAULT_PATH, stage=stage)
         check_passes(PASS1_DETECTORS, PASS2_DETECTORS, facility.tunables)
+        incident_rules.check_tunables(facility.tunables)
+        if dynamodb is None:
+            import boto3
+            from botocore.config import Config
+
+            dynamodb = boto3.client("dynamodb", config=Config(retries={"mode": "standard", "max_attempts": 3}))
         if client is None:
             import boto3
             from botocore.config import Config
@@ -346,13 +438,14 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None) -> Runtime:
             write_client = boto3.client("iotsitewise", config=Config(retries={"mode": "standard", "max_attempts": 1}))
         else:
             write_client = client
-        targets = dq_aliases(facility)
         _RUNTIME = Runtime(
             facility=facility,
             pipes=pipe_metas(facility),
-            dq_targets=targets,
+            dq_targets=dq_aliases(facility),
             reader=make_reader(env.get("READER_STRATEGY") or DEFAULT_STRATEGY, client),
-            writer=DerivedWriter(write_client, allowed=[a for pair in targets.values() for a in pair]),
+            writer=DerivedWriter(write_client, allowed=derived_targets(facility), types=derived_types(facility)),
+            incidents=Incidents(dynamodb, table),
+            alert_targets=alert_aliases(facility),
         )
     return _RUNTIME
 
