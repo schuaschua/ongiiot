@@ -10,6 +10,10 @@
   ``BatchPutAssetPropertyValue`` on the stage's pipe assets plus ``time-series/*`` (alias-addressed
   writes are authorised against the time series; IAM cannot scope by alias, so ``derived_writer.py``
   is the raw/derived boundary). Nothing on ``sim_control`` or ``injection_log`` (AD-4).
+- ``incidents-<stage>`` table (Story 3.3; AD-6): keys ``pk``/``sk`` (S), on demand, retained for ``poc``,
+  destroyed for developer stages. The function role gets exactly ``INCIDENT_ACTIONS`` on that table and
+  ``dynamodb:TransactWriteItems`` scoped to it; its name reaches the Lambda as ``INCIDENTS_TABLE``.
+  The simulator role gets nothing on it (AD-17).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
+from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
@@ -46,6 +51,15 @@ SITEWISE_READ_ACTIONS = [
     "iotsitewise:Describe*",
     "iotsitewise:List*",
 ]
+
+INCIDENT_ACTIONS = [
+    "dynamodb:GetItem",
+    "dynamodb:PutItem",
+    "dynamodb:UpdateItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:Query",
+]
+TRANSACT_ACTIONS = ["dynamodb:TransactWriteItems"]
 
 
 def schedule_state(value: object) -> str:
@@ -76,13 +90,24 @@ class DetectionStack(cdk.Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
+        removal = cdk.RemovalPolicy.RETAIN if stage == "poc" else cdk.RemovalPolicy.DESTROY
+        self.incidents_table = dynamodb.Table(
+            self,
+            "IncidentsTable",
+            table_name=f"incidents-{stage}",
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=removal,
+        )
+
         # AD-17: exactly these grants, nothing else.
         self.role = iam.Role(
             self,
             "FunctionRole",
             role_name=name,
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            description=f"Detection run ({stage}): SiteWise read, derived writes, own logs",
+            description=f"Detection run ({stage}): SiteWise read, derived writes, incidents table, own logs",
         )
         self.role.add_to_policy(iam.PolicyStatement(actions=SITEWISE_READ_ACTIONS, resources=["*"]))
         self.role.add_to_policy(
@@ -91,6 +116,12 @@ class DetectionStack(cdk.Stack):
                 resources=list(pipe_asset_arns)
                 + [self.format_arn(service="iotsitewise", resource="time-series", resource_name="*")],
             )
+        )
+        self.role.add_to_policy(
+            iam.PolicyStatement(actions=INCIDENT_ACTIONS, resources=[self.incidents_table.table_arn])
+        )
+        self.role.add_to_policy(
+            iam.PolicyStatement(actions=TRANSACT_ACTIONS, resources=[self.incidents_table.table_arn])
         )
         self.role.add_to_policy(
             iam.PolicyStatement(
@@ -118,7 +149,11 @@ class DetectionStack(cdk.Stack):
             max_event_age=cdk.Duration.seconds(MAX_EVENT_AGE_S),
             role=self.role,
             log_group=self.log_group,
-            environment={"STAGE": stage, "READER_STRATEGY": DEFAULT_STRATEGY},
+            environment={
+                "STAGE": stage,
+                "READER_STRATEGY": DEFAULT_STRATEGY,
+                "INCIDENTS_TABLE": self.incidents_table.table_name,
+            },
         )
 
         self.invoke_role = iam.Role(
@@ -157,4 +192,5 @@ class DetectionStack(cdk.Stack):
 
         cdk.CfnOutput(self, "FunctionName", value=self.function.function_name)
         cdk.CfnOutput(self, "ScheduleName", value=name)
+        cdk.CfnOutput(self, "IncidentsTableName", value=self.incidents_table.table_name)
         cdk.CfnOutput(self, "ScheduleState", value=state)

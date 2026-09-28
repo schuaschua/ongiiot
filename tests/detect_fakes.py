@@ -138,3 +138,149 @@ class FakeSiteWise(FakeSiteWiseRead, FakeSiteWiseWrite):
     def __init__(self, store, page: int = 50, **write_kwargs):
         FakeSiteWiseRead.__init__(self, store, page=page)
         FakeSiteWiseWrite.__init__(self, **write_kwargs)
+
+
+# -- DynamoDB (low-level client, typed AttributeValues) -----------------------------------------------
+
+_CLAUSE_FN = re.compile(r"^(attribute_exists|attribute_not_exists)\(\s*([#\w]+)\s*\)$")
+_CLAUSE_CMP = re.compile(r"^([#\w]+)\s*(=|<>|<=|>=|<|>)\s*(:\w+)$")
+
+
+def _typed_value(v: dict):
+    """Comparable Python value of a scalar AttributeValue (S or N)."""
+    ((t, x),) = v.items()
+    if t == "N":
+        from decimal import Decimal
+
+        return Decimal(x)
+    if t == "S":
+        return x
+    raise AssertionError(f"fake compares only S and N, got {t}")
+
+
+def evaluate_condition(expr: str | None, item: dict | None, names: dict | None = None, values: dict | None = None) -> bool:
+    """DynamoDB condition semantics for the subset the adapters use: clauses joined by ``AND``, each
+    ``attribute_exists(x)``, ``attribute_not_exists(x)`` or ``x <op> :v``. A comparison on a missing
+    attribute is false, as in DynamoDB. Any other syntax is an error (so the fake never silently passes)."""
+    if expr is None:
+        return True
+    names, values, item = names or {}, values or {}, item or {}
+    for clause in re.split(r"\s+AND\s+", expr.strip()):
+        m = _CLAUSE_FN.match(clause.strip())
+        if m:
+            attr = names.get(m.group(2), m.group(2))
+            present = attr in item
+            if present != (m.group(1) == "attribute_exists"):
+                return False
+            continue
+        m = _CLAUSE_CMP.match(clause.strip())
+        if not m:
+            raise AssertionError(f"fake cannot evaluate condition clause {clause!r}")
+        attr = names.get(m.group(1), m.group(1))
+        if attr not in item:
+            return False
+        a, b = _typed_value(item[attr]), _typed_value(values[m.group(3)])
+        ok = {"=": a == b, "<>": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[m.group(2)]
+        if not ok:
+            return False
+    return True
+
+
+class FakeDynamoDB:
+    """In-memory DynamoDB low-level client for tables keyed ``pk``/``sk`` (both S): ``query`` (``pk = :pk``,
+    ascending ``sk``, paged by ``page``), ``get_item``, ``put_item``, ``delete_item`` and ``transact_write_items``
+    (all-or-nothing, ``TransactionCanceledException`` with ``CancellationReasons``), each honouring
+    ``ConditionExpression``. ``before_write`` (callable(fake, op)) runs before every write, so a test can
+    make another writer win a race. ``fail_writes``: a client error code raised on every write."""
+
+    def __init__(self, table: str, page: int = 100):
+        self.table = table
+        self.page = page
+        self.items: dict[tuple[str, str], dict] = {}
+        self.writes: list[tuple[str, dict]] = []
+        self.before_write = None
+        self.fail_writes: str | None = None
+
+    def _key(self, TableName, key_or_item):
+        assert TableName == self.table, TableName
+        return key_or_item["pk"]["S"], key_or_item["sk"]["S"]
+
+    def _pre(self, op):
+        if self.before_write:
+            hook, self.before_write = self.before_write, None
+            hook(self, op)
+        if self.fail_writes:
+            raise FakeClientError(self.fail_writes, "write failed")
+
+    def query(self, TableName, KeyConditionExpression, ExpressionAttributeValues, ExclusiveStartKey=None, **kwargs):
+        assert TableName == self.table and KeyConditionExpression == "pk = :pk"
+        pk = ExpressionAttributeValues[":pk"]["S"]
+        keys = sorted(k for k in self.items if k[0] == pk)
+        start = 0
+        if ExclusiveStartKey:
+            start = keys.index((ExclusiveStartKey["pk"]["S"], ExclusiveStartKey["sk"]["S"])) + 1
+        page = keys[start : start + self.page]
+        out = {"Items": [copy.deepcopy(self.items[k]) for k in page]}
+        if start + self.page < len(keys):
+            out["LastEvaluatedKey"] = {"pk": {"S": page[-1][0]}, "sk": {"S": page[-1][1]}}
+        return out
+
+    def get_item(self, TableName, Key, **kwargs):
+        item = self.items.get(self._key(TableName, Key))
+        return {"Item": copy.deepcopy(item)} if item is not None else {}
+
+    def _check(self, key, cond, names, values):
+        return evaluate_condition(cond, self.items.get(key), names, values)
+
+    def put_item(self, TableName, Item, ConditionExpression=None, ExpressionAttributeNames=None, ExpressionAttributeValues=None):
+        self._pre("put_item")
+        key = self._key(TableName, Item)
+        if not self._check(key, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues):
+            raise FakeClientError("ConditionalCheckFailedException", "The conditional request failed")
+        self.items[key] = copy.deepcopy(Item)
+        self.writes.append(("put_item", {"Item": copy.deepcopy(Item), "ConditionExpression": ConditionExpression}))
+        return {}
+
+    def delete_item(self, TableName, Key, ConditionExpression=None, ExpressionAttributeNames=None, ExpressionAttributeValues=None):
+        self._pre("delete_item")
+        key = self._key(TableName, Key)
+        if not self._check(key, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues):
+            raise FakeClientError("ConditionalCheckFailedException", "The conditional request failed")
+        self.items.pop(key, None)
+        self.writes.append(("delete_item", {"Key": copy.deepcopy(Key), "ConditionExpression": ConditionExpression}))
+        return {}
+
+    def transact_write_items(self, TransactItems):
+        self._pre("transact_write_items")
+        assert 1 <= len(TransactItems) <= 100
+        ops, reasons, touched = [], [], set()
+        for t in TransactItems:
+            ((kind, body),) = t.items()
+            key = self._key(body["TableName"], body["Item"] if kind == "Put" else body["Key"])
+            assert key not in touched, "one transaction may not touch an item twice"
+            touched.add(key)
+            ok = self._check(key, body.get("ConditionExpression"), body.get("ExpressionAttributeNames"), body.get("ExpressionAttributeValues"))
+            reasons.append({"Code": "None"} if ok else {"Code": "ConditionalCheckFailed"})
+            ops.append((kind, key, body))
+        if any(r["Code"] != "None" for r in reasons):
+            err = FakeClientError("TransactionCanceledException", "Transaction cancelled")
+            err.response["CancellationReasons"] = reasons
+            raise err
+        for kind, key, body in ops:
+            if kind == "Put":
+                self.items[key] = copy.deepcopy(body["Item"])
+            elif kind == "Delete":
+                self.items.pop(key, None)
+            elif kind != "ConditionCheck":
+                raise AssertionError(f"fake does not support {kind}")
+        self.writes.append(("transact_write_items", copy.deepcopy(TransactItems)))
+        return {}
+
+    # -- helpers for assertions ---------------------------------------------------------------------
+
+    def plain(self) -> dict[tuple[str, str], dict]:
+        """Every item, deserialized to plain Python values."""
+        from boto3.dynamodb.types import TypeDeserializer
+
+        de = TypeDeserializer()
+        return {k: {a: de.deserialize(v) for a, v in item.items()} for k, item in self.items.items()}

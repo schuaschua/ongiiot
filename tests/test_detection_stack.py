@@ -10,7 +10,7 @@ from aws_cdk.assertions import Template
 
 from infra.app import build_app
 from infra.stacks import detection, simulator
-from infra.stacks.detection import SITEWISE_READ_ACTIONS, schedule_state
+from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, TRANSACT_ACTIONS, schedule_state
 
 
 def synth(stage: str, **context: str):
@@ -50,6 +50,26 @@ def function_id(tpl: dict) -> str:
     return fid
 
 
+def table_id(tpl: dict) -> str:
+    (tid,) = of_type(tpl, "AWS::DynamoDB::Table")
+    return tid
+
+
+def test_incidents_table(synthesized):
+    stage, _, _, tpl = synthesized
+    tid = table_id(tpl)
+    t = tpl["Resources"][tid]
+    p = t["Properties"]
+    assert p["TableName"] == f"incidents-{stage}"
+    assert p["KeySchema"] == [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}]
+    assert p["AttributeDefinitions"] == [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}]
+    assert p["BillingMode"] == "PAY_PER_REQUEST"
+    assert "StreamSpecification" not in p  # AD-7: no stream on incidents
+    policy = "Retain" if stage == "poc" else "Delete"
+    assert t["DeletionPolicy"] == t["UpdateReplacePolicy"] == policy
+    assert tpl["Outputs"]["IncidentsTableName"]["Value"] == {"Ref": tid}
+
+
 def test_stack_name_and_dependency(synthesized):
     stage, sitewise, stack, _ = synthesized
     assert stack.stack_name == f"DetectionStack-{stage}"
@@ -64,7 +84,11 @@ def test_function_single_flight(synthesized):
     assert fn["PackageType"] == "Image" and fn["Architectures"] == ["x86_64"]
     assert fn["Timeout"] == 50
     assert fn["ReservedConcurrentExecutions"] == 1
-    assert fn["Environment"]["Variables"] == {"STAGE": stage, "READER_STRATEGY": "batch_get"}
+    assert fn["Environment"]["Variables"] == {
+        "STAGE": stage,
+        "READER_STRATEGY": "batch_get",
+        "INCIDENTS_TABLE": {"Ref": table_id(tpl)},
+    }
     (cfg,) = props(tpl, "AWS::Lambda::EventInvokeConfig")
     assert cfg == {
         "FunctionName": {"Ref": function_id(tpl)},
@@ -111,7 +135,7 @@ def test_function_role_is_exactly_ad17(synthesized):
     statements = policy_statements(tpl, role_id)
     assert all(s["Effect"] == "Allow" and "Condition" not in s for s in statements)
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
-    assert len(grants) == len(statements) == 3
+    assert len(grants) == len(statements) == 5
 
     assert grants[tuple(sorted(SITEWISE_READ_ACTIONS))] == ["*"]
     assert set(SITEWISE_READ_ACTIONS) == {
@@ -134,10 +158,19 @@ def test_function_role_is_exactly_ad17(synthesized):
     (lg_id,) = of_type(tpl, "AWS::Logs::LogGroup")
     assert grants[("logs:CreateLogStream", "logs:PutLogEvents")] == [{"Fn::GetAtt": [lg_id, "Arn"]}]
 
-    # AD-4: nothing on DynamoDB (sim_control, injection_log) or any other service.
+    # AD-6/AD-17: the incidents table only, exactly these actions (no Scan, no BatchWrite, no other table).
+    table = [{"Fn::GetAtt": [table_id(tpl), "Arn"]}]
+    assert grants[tuple(sorted(INCIDENT_ACTIONS))] == table
+    assert sorted(INCIDENT_ACTIONS) == sorted(
+        ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
+    )
+    assert grants[tuple(TRANSACT_ACTIONS)] == table and TRANSACT_ACTIONS == ["dynamodb:TransactWriteItems"]
+
+    # AD-4: nothing on sim_control, injection_log or any other service.
     actions = {a for s in statements for a in as_list(s["Action"])}
-    assert not any(a.startswith("dynamodb:") for a in actions)
-    assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs"}
+    dynamo = [s for s in statements if any(a.startswith("dynamodb:") for a in as_list(s["Action"]))]
+    assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 2
+    assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs", "dynamodb"}
 
 
 def test_scheduler_role_only_invokes_the_function(synthesized):
@@ -208,9 +241,10 @@ def test_two_stages_do_not_collide():
         out |= {p["Name"] for p in props(tpl, "AWS::Scheduler::Schedule")}
         out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
         out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role")}
+        out |= {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
         return out
 
-    assert len(names(a)) == 3 and not names(a) & names(b)
+    assert len(names(a)) == 4 and not names(a) & names(b)
 
 
 def _image_hashes(monkeypatch, root) -> tuple[str, str]:

@@ -4,7 +4,8 @@
   before any API call. IAM cannot scope writes by alias, so this guard is the raw/derived boundary.
 - Every value of one ``write`` carries the same timestamp (the run's ``window_end``), so a replayed
   run overwrites identically (AD-9).
-- ``float`` values go out as ``doubleValue``, ``str`` values as ``stringValue``.
+- ``float`` values go out as ``doubleValue``, ``int`` values as ``integerValue`` (32-bit signed, for
+  INTEGER properties such as ``alert_state``), ``str`` values as ``stringValue``. ``bool`` is refused.
 - Requests of at most 10 entries, one value each. Throttling and transient errors are retried a
   few times; anything else raises ``WriteError`` (an adapter failure fails the invocation).
 """
@@ -50,9 +51,16 @@ def check_derived_alias(alias: str, allowed: frozenset[str] | None = None) -> No
         raise AliasError(f"refusing to write {alias}: not a derived alias of the facility model")
 
 
+INT_MIN, INT_MAX = -(2**31), 2**31 - 1
+
+
 def _variant(alias: str, value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return {"stringValue": value}
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not INT_MIN <= value <= INT_MAX:
+            raise ValueError(f"{alias}: integer out of range, got {value!r}")
+        return {"integerValue": value}
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{alias}: value must be a finite number or a string, got {value!r}")
     return {"doubleValue": float(value)}
@@ -88,7 +96,7 @@ class DerivedWriter:
         self._sleep = sleep
         self._max_attempts = max_attempts
 
-    def write(self, values: Mapping[str, float | str], at: datetime) -> int:
+    def write(self, values: Mapping[str, float | int | str], at: datetime) -> int:
         """Write ``alias -> value`` at ``at``. Returns the number of values written."""
         # Validate everything before the first API call.
         for alias in values:

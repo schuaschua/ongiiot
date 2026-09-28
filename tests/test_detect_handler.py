@@ -10,10 +10,11 @@ import pytest
 
 from detect import handler
 from detect.adapters.derived_writer import DerivedWriter
+from detect.adapters.incidents import Incidents
 from detect.adapters.reader import make_reader
 from detect.core.models import Finding
 from facility.model import DEFAULT_PATH, load
-from tests.detect_fakes import FakeSiteWise
+from tests.detect_fakes import FakeDynamoDB, FakeSiteWise
 
 STAGE = "poc-dj"
 ALL_IDS = ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap", "leak_mass_balance", "leak_methane_rise", "outlier_peer"]
@@ -56,20 +57,26 @@ def live_store(facility, lo=START.timestamp() - 120, hi=END.timestamp() + 60):
     }
 
 
-def runtime(facility, fake, strategy="batch_get"):
-    targets = handler.dq_aliases(facility)
+TABLE = f"incidents-{STAGE}"
+
+
+def runtime(facility, fake, strategy="batch_get", db=None):
     return handler.Runtime(
         facility=facility,
         pipes=handler.pipe_metas(facility),
-        dq_targets=targets,
+        dq_targets=handler.dq_aliases(facility),
         reader=make_reader(strategy, fake),
-        writer=DerivedWriter(fake, allowed=[a for pair in targets.values() for a in pair]),
+        writer=DerivedWriter(fake, allowed=handler.derived_targets(facility)),
+        incidents=Incidents(db if db is not None else FakeDynamoDB(TABLE), TABLE),
+        alert_targets=handler.alert_aliases(facility),
     )
 
 
-def run(facility, fake, strategy="batch_get", scheduled=SCHEDULED):
+def run(facility, fake, strategy="batch_get", scheduled=SCHEDULED, db=None):
     logs = []
-    summary = handler.run(runtime(facility, fake, strategy), handler.parse_scheduled_time({"scheduled_time": scheduled}), log=logs.append)
+    summary = handler.run(
+        runtime(facility, fake, strategy, db=db), handler.parse_scheduled_time({"scheduled_time": scheduled}), log=logs.append
+    )
     return summary, logs
 
 
@@ -108,7 +115,7 @@ def test_normal_run(facility, strategy):
     assert summary["window_end"] == "2026-09-28T12:33:00.000Z"
     assert summary["stage"] == STAGE and summary["config_hash"] == facility.config_hash()
     assert summary["reader_strategy"] == strategy
-    assert summary["aliases_no_data"] == [] and summary["values_written"] == 288
+    assert summary["aliases_no_data"] == [] and summary["values_written"] == 288 + 48
     assert summary["samples"] == 144 * 900
     assert {"read_duration_s", "detectors", "ran_ok", "run_s"} <= set(summary)
     assert summary["ran_ok"] == ALL_IDS and summary["findings"] == []
@@ -118,7 +125,7 @@ def test_no_data(facility):
     fake = FakeSiteWise({})
     summary, _ = run(facility, fake)
     assert set(written(facility, fake).values()) == {(0.0, "dq_gap")}
-    assert len(summary["aliases_no_data"]) == 144 and summary["values_written"] == 288
+    assert len(summary["aliases_no_data"]) == 144 and summary["values_written"] == 288 + 48
 
 
 def test_partial_data_scores_only_silent_sensors_zero(facility):
@@ -257,16 +264,20 @@ def test_bad_events_are_refused(event):
 def test_handler_entry_point(facility, monkeypatch):
     fake = FakeSiteWise(live_store(facility), page=20000)
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime({"STAGE": STAGE}, client=fake)
+    rt = handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE}, client=fake, dynamodb=FakeDynamoDB(TABLE))
     assert rt.reader.strategy == handler.DEFAULT_STRATEGY == "batch_get"
     assert handler.runtime({"STAGE": "poc"}) is rt  # cached per cold start
     summary = handler.handler({"scheduled_time": SCHEDULED})
-    assert summary["values_written"] == 288
+    assert summary["values_written"] == 288 + 48
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    assert handler.runtime({"STAGE": STAGE, "READER_STRATEGY": "execute_query"}, client=fake).reader.strategy == "execute_query"
+    env = {"STAGE": STAGE, "INCIDENTS_TABLE": TABLE, "READER_STRATEGY": "execute_query"}
+    assert handler.runtime(env, client=fake, dynamodb=FakeDynamoDB(TABLE)).reader.strategy == "execute_query"
     monkeypatch.setattr(handler, "_RUNTIME", None)
     with pytest.raises(ValueError, match="STAGE"):
         handler.runtime({}, client=fake)
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    with pytest.raises(ValueError, match="INCIDENTS_TABLE"):
+        handler.runtime({"STAGE": STAGE}, client=fake, dynamodb=FakeDynamoDB(TABLE))
     monkeypatch.setattr(handler, "_RUNTIME", None)
 
 
@@ -274,10 +285,13 @@ def test_write_client_has_no_sdk_retries(monkeypatch):
     import boto3
 
     made = []
-    monkeypatch.setattr(boto3, "client", lambda service, config=None, **kw: made.append(config) or object())
+    services = []
+    monkeypatch.setattr(boto3, "client", lambda service, config=None, **kw: made.append(config) or services.append(service) or object())
     monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime({"STAGE": STAGE})
+    rt = handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE})
     monkeypatch.setattr(handler, "_RUNTIME", None)
+    assert sorted(services) == ["dynamodb", "iotsitewise", "iotsitewise"]
+    made = [c for c, svc in zip(made, services, strict=True) if svc == "iotsitewise"]
     attempts = [c.retries["max_attempts"] for c in made]
     assert sorted(attempts) == [1, 3]
     write_config = made[attempts.index(1)]
@@ -434,7 +448,7 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
     monkeypatch.setattr(handler, "load", lambda path, stage: broken)
     monkeypatch.setattr(handler, "_RUNTIME", None)
     with pytest.raises(ValueError, match=detector_id):
-        handler.runtime({"STAGE": STAGE}, client=FakeSiteWise({}))
+        handler.runtime({"STAGE": STAGE, "INCIDENTS_TABLE": TABLE}, client=FakeSiteWise({}), dynamodb=FakeDynamoDB(TABLE))
     assert handler._RUNTIME is None
 
 
