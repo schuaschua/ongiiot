@@ -12,7 +12,8 @@ Every call mints a short-lived token (``TOKEN_TTL_S``) on the stage's service ac
 deletes it again, whatever happens. Create/Update pin the SiteWise plugin (best effort,
 the version actually running is returned), then upsert the folder, the data source and
 the dashboards, keyed by uid so a re-run updates in place. Delete removes the stage's
-dashboards, data source and folder, then the service account.
+dashboards, data source and folder, then the service account; on Delete every failure is
+logged and skipped so the stack never sticks in DELETE_FAILED.
 
 Template placeholders: ``__DS_UID__``, ``__ALIAS_ROOT__``, ``__UID_SUFFIX__``, ``__STAGE__``.
 In the overview, panels containing ``__AREA__`` / ``__PIPE_ID__`` are prototypes cloned per
@@ -76,7 +77,16 @@ class GrafanaApi:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             raise GrafanaError(method, path, exc.code, exc.read().decode("utf-8", "replace")) from None
-        return json.loads(raw) if raw else None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # Network failure or timeout: no HTTP status, reported as 0.
+            raise GrafanaError(method, path, 0, str(exc)) from None
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            LOG.warning(json.dumps({"non_json_response": f"{method} {path}", "body": raw[:200].decode("utf-8", "replace")}))
+            return None
 
 
 def _get_or_none(api: Any, path: str) -> Any:
@@ -118,6 +128,7 @@ def _find_service_account(client: Any, workspace_id: str, name: str) -> str | No
 
 
 def ensure_service_account(client: Any, workspace_id: str, stage: str) -> str:
+    """The stage's service account. Its ADMIN role is workspace-wide, not limited to the stage's folder."""
     name = service_account_name(stage)
     found = _find_service_account(client, workspace_id, name)
     if found:
@@ -138,9 +149,12 @@ def short_lived_token(client: Any, workspace_id: str, sa_id: str, now: Callable[
     try:
         yield token["key"]
     finally:
-        client.delete_workspace_service_account_token(
-            workspaceId=workspace_id, serviceAccountId=sa_id, tokenId=token["id"]
-        )
+        try:
+            client.delete_workspace_service_account_token(
+                workspaceId=workspace_id, serviceAccountId=sa_id, tokenId=token["id"]
+            )
+        except Exception as exc:  # never mask the original error; the token expires anyway
+            LOG.warning(json.dumps({"token_delete_failed": str(exc)[:MAX_ERROR_CHARS], "token_id": token["id"]}))
 
 
 # -- templates -------------------------------------------------------------------------------
@@ -229,20 +243,30 @@ def dashboard_uids(props: dict[str, Any]) -> list[str]:
 # -- provisioning ----------------------------------------------------------------------------
 
 
-def pin_plugin(api: Any, plugin_id: str, version: str) -> tuple[str, bool]:
-    """Install ``version`` if it is not already running. Returns (running version, pinned)."""
+def _plugin_version(api: Any, plugin_id: str) -> str:
     settings = _get_or_none(api, f"/api/plugins/{plugin_id}/settings") or {}
-    current = (settings.get("info") or {}).get("version", "")
-    if current == version:
-        return current, True
+    return (settings.get("info") or {}).get("version", "") if isinstance(settings, dict) else ""
+
+
+def pin_plugin(api: Any, plugin_id: str, version: str) -> tuple[str, bool]:
+    """Best effort: install ``version`` if it is not already running. Never fails the deploy.
+
+    Returns (version actually read back, or "unknown"; whether it equals ``version``).
+    The plugin is workspace-wide, so any stage deploy can change it for every stage.
+    """
+    current = ""
     try:
+        current = _plugin_version(api, plugin_id)
+        if current == version:
+            return current, True
         api.request("POST", f"/api/plugins/{plugin_id}/install", {"version": version})
+        running = _plugin_version(api, plugin_id)
     except GrafanaError as exc:
         # Managed Grafana may refuse plugin changes; keep the shipped version and record it.
         LOG.warning(json.dumps({"plugin_pin_failed": str(exc)[:MAX_ERROR_CHARS], "running": current}))
         return current or "unknown", False
-    settings = _get_or_none(api, f"/api/plugins/{plugin_id}/settings") or {}
-    running = (settings.get("info") or {}).get("version", "") or version
+    if not running:
+        return "unknown", False
     return running, running == version
 
 
@@ -296,10 +320,14 @@ def provision(api: Any, props: dict[str, Any]) -> dict[str, str]:
 
 
 def deprovision(api: Any, props: dict[str, Any]) -> dict[str, str]:
-    for uid in dashboard_uids(props):
-        _delete_if_present(api, f"/api/dashboards/uid/{uid}")
-    _delete_if_present(api, f"/api/datasources/uid/{props['DataSourceUid']}")
-    _delete_if_present(api, f"/api/folders/{props['FolderUid']}")
+    """Remove the stage's objects. Errors are logged, not raised, so the stack never sticks in DELETE_FAILED."""
+    paths = [f"/api/dashboards/uid/{uid}" for uid in dashboard_uids(props)]
+    paths += [f"/api/datasources/uid/{props['DataSourceUid']}", f"/api/folders/{props['FolderUid']}"]
+    for path in paths:
+        try:
+            _delete_if_present(api, path)
+        except GrafanaError as exc:
+            LOG.warning(json.dumps({"delete_failed": str(exc)[:MAX_ERROR_CHARS]}))
     return {}
 
 
@@ -315,6 +343,28 @@ def _grafana():
     return _client
 
 
+def _delete_stage(client: Any, workspace_id: str, stage: str, props: dict[str, Any], api_factory) -> dict[str, str]:
+    """Best effort: log every failure and still report success (workspace gone, 403, ...)."""
+    sa_id = None
+    try:
+        sa_id = ensure_service_account(client, workspace_id, stage)
+        with short_lived_token(client, workspace_id, sa_id) as token:
+            deprovision(api_factory(props["GrafanaUrl"], token), props)
+    except Exception as exc:
+        LOG.warning(json.dumps({"deprovision_failed": str(exc)[:MAX_ERROR_CHARS]}))
+    if sa_id is None:
+        try:
+            sa_id = _find_service_account(client, workspace_id, service_account_name(stage))
+        except Exception as exc:
+            LOG.warning(json.dumps({"service_account_lookup_failed": str(exc)[:MAX_ERROR_CHARS]}))
+    if sa_id is not None:
+        try:
+            client.delete_workspace_service_account(workspaceId=workspace_id, serviceAccountId=sa_id)
+        except Exception as exc:
+            LOG.warning(json.dumps({"service_account_delete_failed": str(exc)[:MAX_ERROR_CHARS]}))
+    return {}
+
+
 def on_event(event: dict[str, Any], context: Any, *, client: Any = None, api_factory=GrafanaApi) -> dict[str, Any]:
     request = event["RequestType"]
     props = event.get("ResourceProperties", {})
@@ -324,14 +374,11 @@ def on_event(event: dict[str, Any], context: Any, *, client: Any = None, api_fac
     LOG.info(json.dumps({"request": request, "stage": stage, "workspace": workspace_id}))
     client = client or _grafana()
 
-    sa_id = ensure_service_account(client, workspace_id, stage)
-    with short_lived_token(client, workspace_id, sa_id) as token:
-        api = api_factory(props["GrafanaUrl"], token)
-        if request in ("Create", "Update"):
-            data = provision(api, props)
-        else:
-            data = deprovision(api, props)
     if request == "Delete":
-        client.delete_workspace_service_account(workspaceId=workspace_id, serviceAccountId=sa_id)
+        data = _delete_stage(client, workspace_id, stage, props, api_factory)
+    else:
+        sa_id = ensure_service_account(client, workspace_id, stage)
+        with short_lived_token(client, workspace_id, sa_id) as token:
+            data = provision(api_factory(props["GrafanaUrl"], token), props)
     LOG.info(json.dumps({"result": data}))
     return {"PhysicalResourceId": physical_id, "Data": data}

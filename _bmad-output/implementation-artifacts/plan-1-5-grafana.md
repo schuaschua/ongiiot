@@ -3,12 +3,12 @@ title: 'Story 1.5: Watch the live stream in Grafana'
 type: 'feature'
 ticket: 'OG-9'
 created: '2026-09-28'
-status: 'in-progress'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: 'fcf5a1c344fca26b81a2ec3111632e58742149c9'
 context:
@@ -123,11 +123,39 @@ context:
 - **Overview:** the template holds a row prototype (`__AREA__`) and a pipe prototype (`__PIPE_ID__`); the handler clones one row per area and one stat panel per pipe (latest value of the six aliases, `PropertyValue`), each linking to `pipe-detail[-<initials>]` with `var-pipe_id` and `var-area`. Refresh 30 s (144 latest-value queries per refresh).
 - **Service account:** one per stage (`ongiiot-provision-<stage>`, Admin), reused across runs; tokens (900 s) are deleted in a `finally`. Delete removes the stage's dashboards, data source, folder and then the service account.
 
+- Live check (2026-09-29 00:05, run 36443979003):
+  - Workspace `g-f2edb8f41a` is ACTIVE on Grafana 12.4 with AWS_SSO; cross-region Identity Center works; the owner is ADMIN; plugin 2.6.3.
+  - Folder, data source and dashboards are provisioned.
+  - A Grafana query for P-007 `flow_in` returned 299 points in 5 min.
+  - Simulator switched off afterwards (run 36446029226).
+
 ## Plan Change Log
 
 - 2026-09-28: Open Questions 1 and 2 were already decided by the human (Boundaries, Decisions): shared `SharedGrafanaStack`, provisioning as a custom resource during `cdk deploy`.
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 0, medium 7, low 17, false 1, maybe-false 0. Outcome: 6 patch groups, 2 deferrals, no loopback. Findings are grouped by root cause, and duplicates across lenses are named in each row.
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| VG-1, ECH-4 | Real `GrafanaApi` never tested; network errors and non-JSON bodies escape as non-`GrafanaError` | medium | patch | No test builds `GrafanaApi`. Fix: wrap `URLError`/timeouts, add a urlopen-patched test. |
+| ECH-1..3, BH-4, ECH-claim-1 | Best-effort plugin pin can fail the deploy or report an unverified pin | medium | patch | Only the install POST is guarded. Fix: guard every plugin call and report "unknown" when the read-back fails. |
+| BH-7, ECH-5 | Token cleanup in `finally` masks the original error | low | patch | Direct fix: log the cleanup failure. |
+| BH-6, ECH-7 | Delete stuck in `DELETE_FAILED` on non-404 errors | medium | patch | Fix: best-effort delete, log and continue. |
+| BH-2, VG-o1, ECH-13, ECH-claim-2 | Removing an admin ID never revokes on update | medium | patch (doc) + defer | CloudFormation update sends ADD only. Docs give the manual REVOKE; a code fix is deferred. |
+| BH-3, BH-8 | Plugin pin and the service account's ADMIN role are workspace-wide | medium | patch (doc) | ADMIN is needed for plugin install. Documented. |
+| BH-9 | SSO action list and trust condition not pinned by tests | low | patch | Assertions added. |
+| BH-11 | Personal email in docs and comments | low | patch | Replaced by a role reference; the user ID stays. |
+| BH-12 (docs) | Plan reference and example stage in docs | low | patch | Direct doc fix. |
+| VG-2 | Service-account pagination untested | low | defer | The lens suggested defer; one page at POC scale. |
+| BH-5, ECH-6 | Renamed or removed dashboards orphaned on update | low | reject | No renames planned; the fix adds diff logic. |
+| BH-10 | Test gaps (hard-coded measurement names, 24 pipes) | low | reject | Tests tied to the facility model are acceptable. |
+| BH-13 | No dependency on the SiteWise stack; panels empty at first | low | reject | Panels fill once data arrives; covered by the warm-up note. |
+| ECH-8..12, ECH-14 | Data-source name conflict, concurrent SA create, missing gridPos, empty pipes, URL quoting, empty admin list | low | reject | Not reachable with the provisioned-only workflow and safe IDs; the fixes add guards. |
+| IA-R1 | Live sign-in and trends not evidenced in the diff | false | reject | Live `poc-dj` check done (see Implementation Notes and the overnight log); browser sign-in awaits the user. |
+| IA-R3/UX-DR2 | Evidence shown as an extra row, not restyled panels | low | reject | Grafana cannot restyle panels by variable; decision logged. |
+| IA-R4 | Grafana-side Admin and plugin admin | low | reject | The user chose Admin; plugin admin is needed for the pin. |
 
 ## Verification
 

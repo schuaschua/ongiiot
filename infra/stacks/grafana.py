@@ -25,7 +25,9 @@ STACK_NAME = "SharedGrafanaStack"
 WORKSPACE_NAME = "ongiiot"
 GRAFANA_VERSION = "12.4"
 SITEWISE_READ_ONLY = "AWSIoTSiteWiseReadOnlyAccess"
-# Human decision 2026-09-28: only owner@example.com, as Admin. Add users here (docs/ci-cd.md).
+# Human decision 2026-09-28: only the workspace owner, as Admin. Add users here
+# (docs/ci-cd.md). Removing an ID here does NOT revoke it on update (the update call only
+# ADDs); revoke by hand with `aws grafana update-permissions` (docs/ci-cd.md section 6).
 ADMIN_USER_IDS: tuple[str, ...] = ("00000000-0000-0000-0000-000000000000",)
 
 # grafana:UpdatePermissions for SSO users also calls Identity Center on the caller's behalf

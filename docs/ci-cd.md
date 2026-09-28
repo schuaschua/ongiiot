@@ -102,7 +102,9 @@ Allow at least 30 minutes of warm-up before a demo or a detection test (AD-15: t
 
 All stages share one Amazon Managed Grafana workspace (Grafana 12.4) in `SharedGrafanaStack` (fixed name, no stage suffix, like `SharedNetworkStack`). The first stage deploy creates it, because every `GrafanaStack-<stage>` depends on it; later deploys reuse it. Deleting a stage leaves it in place. Its workspace role holds only `AWSIoTSiteWiseReadOnlyAccess` (AD-11).
 
-**URL.** The stack outputs `SharedGrafanaStack.GrafanaUrl` and `GrafanaStack-<stage>.GrafanaUrl` carry the workspace URL (`https://g-….grafana-workspace.ap-southeast-1.amazonaws.com`). `GrafanaStack-<stage>` also outputs `PipeDetailUid`, `FacilityOverviewUid`, `FolderUid`, `DataSourceUid` and `SiteWisePluginVersion` (the SiteWise plugin version actually running; 2.6.3 is requested, and if Managed Grafana refuses the install, the shipped version stays and is reported here).
+**URL.** The stack outputs `SharedGrafanaStack.GrafanaUrl` and `GrafanaStack-<stage>.GrafanaUrl` carry the workspace URL (`https://g-….grafana-workspace.ap-southeast-1.amazonaws.com`). `GrafanaStack-<stage>` also outputs `PipeDetailUid`, `FacilityOverviewUid`, `FolderUid`, `DataSourceUid` and `SiteWisePluginVersion` (the SiteWise plugin version actually running; 2.6.3 is requested, and if Managed Grafana refuses the install, the shipped version stays and is reported here). The plugin is workspace-wide: a deploy of any stage can change it for every stage.
+
+Example for the stage `poc-dj`:
 
 ```bash
 aws cloudformation describe-stacks --region ap-southeast-1 --stack-name GrafanaStack-poc-dj \
@@ -111,7 +113,18 @@ aws cloudformation describe-stacks --region ap-southeast-1 --stack-name GrafanaS
 
 **Sign-in.** Open the URL and choose "Sign in with AWS IAM Identity Center". Identity Center is the organization instance in `us-east-1`; the workspace is in `ap-southeast-1`. Only assigned users get in; anyone else is refused.
 
-**Adding a user.** Access is code, not clicks. Add the user's Identity Center user ID (Identity Center console → Users → the user → "User ID") to `ADMIN_USER_IDS` in `infra/stacks/grafana.py` and deploy any stage. A custom resource calls `grafana:UpdatePermissions` to add them as Admin (and revokes them if the stack is deleted). Today only `owner@example.com` is assigned. `UpdatePermissions` reports per-user failures in its response without failing the deploy, so check that the new user can sign in.
+**Adding a user.** Access is code, not clicks. Add the user's Identity Center user ID (Identity Center console → Users → the user → "User ID") to `ADMIN_USER_IDS` in `infra/stacks/grafana.py` and deploy any stage. A custom resource calls `grafana:UpdatePermissions` to add them as Admin (and revokes them if the stack is deleted). Today only the workspace owner is assigned. `UpdatePermissions` reports per-user failures in its response without failing the deploy, so check that the new user can sign in.
+
+**Removing a user.** Taking an ID out of `ADMIN_USER_IDS` does **not** revoke it: on update the custom resource only adds. Remove it from the list, then revoke by hand:
+
+```bash
+WS=$(aws cloudformation describe-stacks --region ap-southeast-1 --stack-name SharedGrafanaStack \
+  --query "Stacks[0].Outputs[?OutputKey=='WorkspaceId'].OutputValue" --output text)
+aws grafana update-permissions --region ap-southeast-1 --workspace-id "$WS" \
+  --update-instruction-batch '[{"action":"REVOKE","role":"ADMIN","users":[{"id":"<identity-center-user-id>","type":"SSO_USER"}]}]'
+```
+
+The output's `errors` list must be empty.
 
 **Per-stage content.** Each deploy of `GrafanaStack-<stage>` provisions, through the Grafana HTTP API, during `cdk deploy`:
 
@@ -122,11 +135,11 @@ aws cloudformation describe-stacks --region ap-southeast-1 --stack-name GrafanaS
 | Pipe detail dashboard uid | `pipe-detail` | `pipe-detail-<initials>` |
 | Facility overview dashboard uid | `facility-overview` | `facility-overview-<initials>` |
 
-The dashboards come from `dashboards/pipe-detail.json` and `dashboards/facility-overview.json`, filled with the stage's `alias_root` and pipe list from `facility/model.py`. A re-run updates everything in place by uid. Edits made in the Grafana UI are overwritten on the next deploy: change the JSON instead. Open a pipe directly with `<GrafanaUrl>/d/pipe-detail-dj/pipe-detail?var-pipe_id=P-007&var-area=train1`.
+The dashboards come from `dashboards/pipe-detail.json` and `dashboards/facility-overview.json`, filled with the stage's `alias_root` and pipe list from `facility/model.py`. A re-run updates everything in place by uid. Edits made in the Grafana UI are overwritten on the next deploy: change the JSON instead. Open a pipe directly with, for example for the stage `poc-dj`, `<GrafanaUrl>/d/pipe-detail-dj/pipe-detail?var-pipe_id=P-007&var-area=train1`.
 
-The provisioning Lambda (`grafana-provision-<stage>`) holds only the Grafana service-account actions on this workspace. On every run it mints a service-account token that lives at most 15 minutes and deletes it again. No API key is stored anywhere. Deleting `GrafanaStack-<stage>` removes the stage's folder, dashboards, data source and service account. The CI deploy role and its trust are unchanged: provisioning runs as a CloudFormation custom resource under the CDK execution role.
+The provisioning Lambda (`grafana-provision-<stage>`) holds only the Grafana service-account actions on this workspace. Its per-stage service account (`ongiiot-provision-<stage>`) has the Grafana ADMIN role, which is workspace-wide: while its token lives it could change any stage's folders, data sources and dashboards, not only its own. On every run it mints a service-account token that lives at most 15 minutes and deletes it again. No API key is stored anywhere. Deleting `GrafanaStack-<stage>` removes the stage's folder, dashboards, data source and service account. The CI deploy role and its trust are unchanged: provisioning runs as a CloudFormation custom resource under the CDK execution role.
 
-If sign-in through Identity Center does not work across regions, record it in the spine's Open Questions and fall back to self-hosted Grafana with the same dashboards (plan for Story 1.5).
+If sign-in through Identity Center does not work across regions, record it in the spine's Open Questions and fall back to self-hosted Grafana with the same dashboards (see the spine's Open Questions).
 
 ## What this does and does not protect
 

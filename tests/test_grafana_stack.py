@@ -10,7 +10,7 @@ from aws_cdk.assertions import Template
 
 from facility.model import DEFAULT_PATH, load
 from infra.app import build_app
-from infra.stacks.grafana import ADMIN_USER_IDS, SITEWISE_READ_ONLY
+from infra.stacks.grafana import ADMIN_USER_IDS, SITEWISE_READ_ONLY, SSO_ACTIONS
 from infra.stacks.grafana_provision import PLUGIN_VERSION, SERVICE_ACCOUNT_ACTIONS
 
 
@@ -84,6 +84,42 @@ def test_workspace_role_holds_only_sitewise_read_only(synthesized):
     (trust,) = role["AssumeRolePolicyDocument"]["Statement"]
     assert trust["Principal"] == {"Service": "grafana.amazonaws.com"}
     assert trust["Condition"]["StringEquals"] == {"aws:SourceAccount": {"Ref": "AWS::AccountId"}}
+    assert trust["Condition"]["StringLike"] == {
+        "aws:SourceArn": {
+            "Fn::Join": [
+                "",
+                ["arn:", {"Ref": "AWS::Partition"}, ":grafana:ap-southeast-1:", {"Ref": "AWS::AccountId"}, ":/workspaces/*"],
+            ]
+        }
+    }
+    assert set(trust) == {"Action", "Condition", "Effect", "Principal"} and trust["Effect"] == "Allow"
+    assert set(trust["Condition"]) == {"StringEquals", "StringLike"}
+
+
+def test_admin_assignment_identity_center_actions_exact(synthesized):
+    _, _, tpl, _, _ = synthesized
+    (policy,) = [r["Properties"] for r in of_type(tpl, "AWS::IAM::Policy").values()]
+    statements = policy["PolicyDocument"]["Statement"]
+    assert len(statements) == 2
+    (sso,) = [s for s in statements if not any(a.startswith("grafana:") for a in as_list(s["Action"]))]
+    assert sso == {
+        "Action": [
+            "sso:DescribeRegisteredRegions",
+            "sso:GetSharedSsoConfiguration",
+            "sso:ListDirectoryAssociations",
+            "sso:GetManagedApplicationInstance",
+            "sso:ListProfiles",
+            "sso:AssociateProfile",
+            "sso:DisassociateProfile",
+            "sso:GetProfile",
+            "sso:ListProfileAssociations",
+            "sso-directory:DescribeUser",
+            "identitystore:DescribeUser",
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+    }
+    assert tuple(sso["Action"]) == SSO_ACTIONS
 
 
 def test_admin_assignment_for_the_one_user(synthesized):

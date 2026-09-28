@@ -273,3 +273,147 @@ def test_response_size_under_4kb():
     aws, grafana = FakeAws(), FakeGrafana()
     result = run("Create", props_for("poc-dj"), aws, grafana)
     assert len(json.dumps(result)) < 4096
+
+
+# -- real HTTP client (urlopen patched) -------------------------------------------------------
+
+
+def test_grafana_api_maps_http_errors_and_sends_bearer(monkeypatch):
+    import io
+    import urllib.error
+
+    sent = []
+    replies = []
+
+    class Resp:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def read(self):
+            return self.raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout):
+        sent.append(req)
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return Resp(reply)
+
+    monkeypatch.setattr(handler.urllib.request, "urlopen", fake_urlopen)
+    api = handler.GrafanaApi("https://g.example/", "tok")
+
+    replies.append(b'{"ok": true}')
+    assert api.request("POST", "/api/folders", {"uid": "f"}) == {"ok": True}
+    req = sent[-1]
+    assert req.full_url == "https://g.example/api/folders"
+    assert req.get_header("Authorization") == "Bearer tok"
+    assert req.get_method() == "POST"
+    assert json.loads(req.data) == {"uid": "f"}
+
+    replies.append(urllib.error.HTTPError("u", 404, "nf", {}, io.BytesIO(b"x" * 10_000)))
+    with pytest.raises(handler.GrafanaError) as exc:
+        api.request("GET", "/api/folders/f")
+    assert exc.value.status == 404
+    assert "x" * handler.MAX_ERROR_CHARS in str(exc.value)
+    assert "x" * (handler.MAX_ERROR_CHARS + 1) not in str(exc.value)
+
+    replies.append(b"")
+    assert api.request("DELETE", "/api/folders/f") is None
+
+    replies.append(b"<html>not json</html>")
+    assert api.request("GET", "/api/health") is None
+
+    replies.append(urllib.error.URLError("connection refused"))
+    with pytest.raises(handler.GrafanaError) as exc:
+        api.request("GET", "/api/health")
+    assert exc.value.status == 0
+
+    replies.append(TimeoutError("timed out"))
+    with pytest.raises(handler.GrafanaError) as exc:
+        api.request("GET", "/api/health")
+    assert exc.value.status == 0
+
+
+# -- best-effort paths -------------------------------------------------------------------------
+
+
+class PluginErrors(FakeGrafana):
+    def __init__(self, fail_on: str, status: int = 500, **kw):
+        super().__init__(**kw)
+        self.fail_on = fail_on
+        self.status = status
+
+    def request(self, method, path, body=None):
+        if path.startswith("/api/plugins") and method == self.fail_on:
+            raise handler.GrafanaError(method, path, self.status, "boom")
+        return super().request(method, path, body)
+
+
+@pytest.mark.parametrize(("fail_on", "status"), [("GET", 500), ("GET", 0), ("POST", 500), ("POST", 0)])
+def test_plugin_errors_never_fail_the_deploy(fail_on, status):
+    aws, grafana = FakeAws(), PluginErrors(fail_on, status, plugin_version="2.5.0")
+    result = run("Create", props_for("poc-dj"), aws, grafana)
+    assert result["Data"]["PluginPinned"] == "false"
+    assert result["Data"]["PluginVersion"] == ("unknown" if fail_on == "GET" else "2.5.0")
+    assert set(grafana.dashboards) == {"pipe-detail-dj", "facility-overview-dj"}
+
+
+def test_plugin_pin_reports_only_version_read_back():
+    class NoReadBack(FakeGrafana):
+        def request(self, method, path, body=None):
+            if path.endswith("/settings") and method == "GET" and ("POST", "/api/plugins/grafana-iot-sitewise-datasource/install") in self.calls:
+                self.calls.append((method, path))
+                return {}
+            return super().request(method, path, body)
+
+    aws, grafana = FakeAws(), NoReadBack(plugin_version="2.5.0")
+    result = run("Create", props_for("poc-dj"), aws, grafana)
+    assert result["Data"]["PluginVersion"] == "unknown" and result["Data"]["PluginPinned"] == "false"
+
+
+def test_token_delete_failure_does_not_mask_original_error():
+    class TokenStuck(FakeAws):
+        def delete_workspace_service_account_token(self, **kw):
+            raise RuntimeError("token delete failed")
+
+    class Broken(FakeGrafana):
+        def request(self, method, path, body=None):
+            if path == "/api/dashboards/db":
+                raise handler.GrafanaError(method, path, 500, "original")
+            return super().request(method, path, body)
+
+    with pytest.raises(handler.GrafanaError, match="original"):
+        run("Create", props_for("poc-dj"), TokenStuck(), Broken())
+
+
+def test_delete_succeeds_despite_grafana_errors():
+    class Forbidden(FakeGrafana):
+        def request(self, method, path, body=None):
+            if method == "DELETE" and "datasources" in path:
+                raise handler.GrafanaError(method, path, 403, "forbidden")
+            return super().request(method, path, body)
+
+    aws, grafana = FakeAws(), Forbidden()
+    props = props_for("poc-dj")
+    run("Create", props, aws, grafana)
+    result = run("Delete", props, aws, grafana, physical_id="grafana-provision-poc-dj")
+    assert result == {"PhysicalResourceId": "grafana-provision-poc-dj", "Data": {}}
+    assert grafana.dashboards == {} and grafana.folders == {}  # later objects still attempted
+    assert set(grafana.datasources) == {"sitewise-poc-dj"}
+    assert aws.accounts == {} and aws.tokens == {}
+
+
+def test_delete_succeeds_when_workspace_is_gone():
+    class Gone(FakeAws):
+        def list_workspace_service_accounts(self, **kw):
+            raise RuntimeError("ResourceNotFoundException: workspace not found")
+
+    event = {"RequestType": "Delete", "PhysicalResourceId": "grafana-provision-poc-dj", "ResourceProperties": props_for("poc-dj")}
+    result = handler.on_event(event, None, client=Gone(), api_factory=lambda u, t: FakeGrafana())
+    assert result["Data"] == {}
