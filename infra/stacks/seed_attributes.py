@@ -80,7 +80,10 @@ class SeedAttributes(Construct):
         self.function.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["iotsitewise:BatchPutAssetPropertyValue"],
-                resources=[a.attr_asset_arn for a in pipe_assets.values()],
+                # Writes addressed by alias are authorised against the time series, not the
+                # asset (first real deploy, 2026-09-28: AccessDenied with asset ARNs only).
+                resources=[a.attr_asset_arn for a in pipe_assets.values()]
+                + [cdk.Stack.of(self).format_arn(service="iotsitewise", resource="time-series", resource_name="*")],
             )
         )
 

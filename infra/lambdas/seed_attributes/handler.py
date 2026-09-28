@@ -101,7 +101,7 @@ def write_entries(entries: list[dict[str, str]], client: Any = None, sleep=time.
             failed_ids = {e["entryId"] for e in errors}
             codes = {err["errorCode"] for e in errors for err in e.get("errors", [])}
             if attempt == MAX_ATTEMPTS or not codes or not codes <= RETRYABLE:
-                raise RuntimeError(f"BatchPutAssetPropertyValue failed: {json.dumps(errors, default=str)[:3000]}")
+                raise RuntimeError(f"BatchPutAssetPropertyValue failed: {json.dumps(errors, default=str)[:800]}")
             pending = [r for r in pending if r["entryId"] in failed_ids]
             sleep(min(2**attempt, 30))
     return len(entries)

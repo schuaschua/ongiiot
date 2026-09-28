@@ -91,7 +91,10 @@ class SimulatorStack(cdk.Stack):
         self.task_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["iotsitewise:BatchPutAssetPropertyValue", "iotsitewise:DescribeTimeSeries"],
-                resources=list(pipe_asset_arns),
+                # Alias-addressed calls are authorised against the time series (AccessDenied on the
+                # first real deploy with asset ARNs only); IAM cannot narrow it by alias (AD-17).
+                resources=list(pipe_asset_arns)
+                + [self.format_arn(service="iotsitewise", resource="time-series", resource_name="*")],
             )
         )
         self.task_role.add_to_policy(

@@ -98,7 +98,7 @@ def test_container_env_and_platform(synthesized):
 
 
 def test_task_role_is_exactly_ad17(synthesized):
-    stage, sitewise, _, tpl = synthesized
+    stage, sitewise, sim, tpl = synthesized
     (td,) = props(tpl, "AWS::ECS::TaskDefinition")
     task_role = td["TaskRoleArn"]["Fn::GetAtt"][0]
     exec_role = td["ExecutionRoleArn"]["Fn::GetAtt"][0]
@@ -118,8 +118,11 @@ def test_task_role_is_exactly_ad17(synthesized):
         sitewise.resolve(sitewise.export_value(a.attr_asset_arn))["Fn::ImportValue"]
         for a in sitewise.pipe_assets.values()
     }
-    assert len(sw) == len(sitewise.pipe_assets)
-    assert {r["Fn::ImportValue"] for r in sw} == expected_exports
+    # Plus the time-series resource: alias-addressed calls are authorised against it.
+    time_series = [r for r in sw if "Fn::ImportValue" not in r]
+    assert time_series == [sim.resolve(sim.format_arn(service="iotsitewise", resource="time-series", resource_name="*"))]
+    assert len(sw) == len(sitewise.pipe_assets) + 1
+    assert {r["Fn::ImportValue"] for r in sw if "Fn::ImportValue" in r} == expected_exports
     assert all(e.startswith(f"SiteWiseAssetsStack-{stage}:") and "AssetArn" in e for e in expected_exports)
 
     control = table_id(tpl, f"sim-control-{stage}")
