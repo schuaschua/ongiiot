@@ -7,3 +7,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-facility-model-sitewise.md`
   summary: Verify on the first real deploy that the seed Lambda's BatchPutAssetPropertyValue grant on pipe asset ARNs authorises writes addressed by propertyAlias (else add the time-series resource type).
   evidence: maybe-false, high if true (the seed and the stack would fail with AccessDenied). A real deploy of stage poc-dj, or AWS IAM docs for the iotsitewise time-series resource type, would settle it. This is the spine's AD-17 open question.
+- source_plan: `_bmad-output/implementation-artifacts/plan-simulator.md`
+  summary: Package and deploy the simulator — sim/Dockerfile (python:3.14-slim from uv.lock) and a per-stage CDK SimulatorStack with sim_control and injection_log tables, a public-subnet VPC without NAT, an ECS Fargate service (desired 1) and the AD-17 task role, depending on SiteWiseAssetsStack.
+  evidence: Split from the simulator plan at the token gate (about 1,900 tokens against the 1,600 target); the simulator runtime is testable locally without it.
