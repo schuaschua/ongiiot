@@ -28,3 +28,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-1-4-simulator-fargate.md`
   summary: Update the architecture `.memlog.md` CI/CD entries (poc now deploys by manual dispatch from main; no reviewer gate) and add the Story 1.4 decisions (Fargate, IAM cannot scope by alias, on/off switch).
   evidence: The memlog still records "merge to main deploys poc" and "reviewer approval" as ADOPTED.
+- source_plan: `_bmad-output/implementation-artifacts/plan-1-5-grafana.md`
+  summary: Addressed (Story 1.5) the Grafana provisioning entry from plan-cicd-github-actions.md — provisioning now runs during `cdk deploy` as a custom resource (`GrafanaStack-<stage>`), so deploy.yml needs no extra step and the CI deploy role needs no Grafana permissions.
+  evidence: infra/stacks/grafana_provision.py, infra/lambdas/grafana_provision/handler.py; AD-16 amended 2026-09-28.
