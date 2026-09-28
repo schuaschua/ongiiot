@@ -49,3 +49,9 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-2-3-dq-drift-gap.md`
   summary: Add an offset-from-peers data-quality check, so a sensor that drifted and then stopped (constant offset) stays flagged.
   evidence: dq_drift flags only an ongoing linear trend (R² gate); a completed drift clears while the calibration error remains.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-4-dq-overview.md`
+  summary: Show data age on the trust overview (a "last evaluated" indicator, or colour stale scores), so stopped detection doesn't leave tiles green; pair with Story 4.4 alarms.
+  evidence: PropertyValue returns the latest value however old; a stopped detector leaves trust tiles green indefinitely.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-4-dq-overview.md`
+  summary: Have the owner check the overview's readability in a browser (three tiles per pipe, three pipes per row) and adjust the tile sizes if cramped.
+  evidence: Layout verified structurally and via API only; no visual render check was possible overnight.
