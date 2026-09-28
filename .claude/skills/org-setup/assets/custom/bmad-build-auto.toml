@@ -1,0 +1,8 @@
+# Org Kit override (org-setup). Loads the org and project standards as persistent facts, and offers
+# Scrooge McDuck's project close-out once every epic and story is done. Unattended, so it never asks the
+# end-of-epic AI feedback; it only says an epic is waiting to be rated.
+[workflow]
+persistent_facts = [
+  "file:{standards_glob}",
+]
+on_complete = "This loop runs unattended, so never ask the end-of-epic AI feedback here: run `uv run .claude/skills/agent-scrooge/scripts/ai_feedback.py {project-root} pending` (resolve {project-root} to the project folder) and, if it lists any epic, only mention in your summary that those epics are finished and waiting for the team to rate the AI (the next interactive build, the epic retrospective or Scrooge McDuck will ask). Then check whether the project's delivery is finished: read the sprint status (_bmad-output/implementation-artifacts/sprint-status.yaml, or wherever the project keeps sprint-status.yaml). Only if every epic and every story in it is done, and the project has not been closed out yet (no estimate model *.estimate.json in the org config's cost_estimates_folder, default docs/costing, has a close_out entry), ask the user once whether Scrooge McDuck (the agent-scrooge skill) should close out the project now: how long it took from the first BMad stage to the last epic, the total Claude API calls and their cost at Claude's list prices, added to the cost estimate workbook for the dashboard. Suggest a fresh session (/clear, then 'Scrooge, close out the project'); start Scrooge here only on an explicit yes. If anything is still open, or the close-out exists, say nothing about it."

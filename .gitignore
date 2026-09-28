@@ -1,0 +1,21 @@
+# Scratch and generated
+.work/
+_bmad/render/
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# CDK
+cdk.out/
+*.cdk.staging/
+cdk.context.json
+
+# Secrets
+.env
+
+# Personal BMad answers
+*.user.toml
