@@ -198,7 +198,7 @@ tunables:
     leak_mass_balance: {}
     leak_methane_rise: {}
     outlier_peer: {}
-    dq_flatline: {}
-    dq_stuck: {}
+    dq_flatline: {min_run_s: 30, full_s: 60, rel_tol: 1.0e-6}   # railed within rel_tol x contract span
+    dq_stuck: {min_run_s: 30, full_s: 60}                       # exactly repeated, not railed
     dq_drift: {}
     dq_gap: {}

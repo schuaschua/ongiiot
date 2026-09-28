@@ -1,4 +1,5 @@
-"""Full detection runs with fakes: the "Normal run", "No data" and "Replay" rows (Story 2.1)."""
+"""Full detection runs with fakes: the "Normal run", "No data" and "Replay" rows (Story 2.1), and
+railed and stuck sensors end to end (Story 2.2)."""
 
 from __future__ import annotations
 
@@ -25,9 +26,16 @@ def facility():
     return load(DEFAULT_PATH, stage=STAGE)
 
 
+def live_value(contract, t):
+    """Healthy synthetic reading: varies every second, mid-range of the contract (off both rails)."""
+    return (contract.min + contract.max) / 2 + (t % 10) * (contract.max - contract.min) * 1e-4
+
+
 def live_store(facility, lo=START.timestamp() - 120, hi=END.timestamp() + 60):
     return {
-        facility.alias(p.id, m): [(t, 1.0, "GOOD") for t in range(int(lo), int(hi))] for p in facility.pipes for m in p.sensors
+        facility.alias(p.id, m): [(t, live_value(p.contracts[m], t), "GOOD") for t in range(int(lo), int(hi))]
+        for p in facility.pipes
+        for m in p.sensors
     }
 
 
@@ -119,7 +127,7 @@ def test_replay_writes_identical_values(facility):
 
 def test_detector_failure_is_logged_and_skipped(facility):
     class Boom:
-        id, version = "dq_boom", "1"
+        id, version, kind = "dq_boom", "1", "pipe"
 
         def detect(self, pw, t):
             raise RuntimeError("boom")
@@ -136,7 +144,7 @@ def test_detector_failure_is_logged_and_skipped(facility):
 class DqOn:
     """Fake pass-1 detector: a dq_* finding with confidence ``c`` on one (pipe, measurement)."""
 
-    id, version = "dq_fake", "1"
+    id, version, kind = "dq_fake", "1", "pipe"
 
     def __init__(self, facility, pipe_id, measurement, c):
         self.alias = facility.alias(pipe_id, measurement)
@@ -264,3 +272,161 @@ def test_pipe_metas_match_the_model(facility):
     assert (m.area, m.service, m.material, m.age_years, m.peer_group) == (p.area, p.service, p.material, p.age_years, p.peer_group)
     assert dict(m.aliases) == {s: facility.alias("P-007", s) for s in p.sensors}
     assert m.contracts["flow_in"].max == p.contracts["flow_in"].max
+
+
+# -- Story 2.2: dq_flatline and dq_stuck registered in pass 1 ------------------------------------
+
+
+def test_pass1_registers_flatline_and_stuck():
+    assert [(d.id, d.kind) for d in handler.PASS1_DETECTORS] == [("dq_flatline", "pipe"), ("dq_stuck", "pipe")]
+    from detect.core.models import PipeDetector
+
+    assert all(isinstance(d, PipeDetector) for d in handler.PASS1_DETECTORS)  # structural: id, version, kind, detect
+
+
+def test_railed_and_stuck_sensors_end_to_end(facility):
+    """P-003 flow_in railed at its contract min and P-015 temperature frozen mid-range, both for the
+    last 120 s of the window: `_dq` 0.0 with the named check; the other 142 sensors stay 1.0 / ""."""
+    store = live_store(facility)
+    fault_from = int(END.timestamp()) - 120
+    railed, stuck = facility.alias("P-003", "flow_in"), facility.alias("P-015", "temperature")
+    store[railed] = [(t, facility.pipe("P-003").contracts["flow_in"].min if t >= fault_from else v, q) for t, v, q in store[railed]]
+    store[stuck] = [(t, 251.37 if t >= fault_from else v, q) for t, v, q in store[stuck]]
+    fake = FakeSiteWise(store, page=20000)
+    summary, logs = run(facility, fake)
+    values = written(facility, fake)
+    assert values[("P-003", "flow_in")] == (0.0, "dq_flatline")
+    assert values[("P-015", "temperature")] == (0.0, "dq_stuck")
+    others = {k: v for k, v in values.items() if k not in {("P-003", "flow_in"), ("P-015", "temperature")}}
+    assert len(others) == 142 and set(others.values()) == {(1.0, "")}
+    assert summary["ran_ok"] == ["dq_flatline", "dq_stuck"]
+    assert summary["detectors"] == {"dq_flatline": "1", "dq_stuck": "1"}
+    assert len(logs) == 1  # no detector errors
+
+
+def test_facility_detectors_run_once_per_run(facility):
+    p = facility.pipes[0]
+
+    class Whole:
+        id, version, kind = "dq_whole", "1", "facility"
+        calls = 0
+
+        def detect(self, fw, t):
+            Whole.calls += 1
+            assert set(fw.pipes) == {q.id for q in facility.pipes}
+            alias = fw.pipes[p.id].aliases[p.sensors[0]]
+            return [Finding(self.id, self.version, p.id, (alias,), fw.window.start, fw.window.end, 0.4, "x.")]
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, _ = run_with(facility, fake, [Whole()])
+    assert Whole.calls == 1 and summary["ran_ok"] == ["dq_whole"]
+    assert written(facility, fake)[(p.id, p.sensors[0])] == (pytest.approx(0.6), "dq_whole")
+
+
+def test_facility_detector_naming_another_pipes_alias_is_skipped(facility):
+    p0, p1 = facility.pipes[0], facility.pipes[1]
+
+    class Crossed:
+        id, version, kind = "dq_crossed", "1", "facility"
+
+        def detect(self, fw, t):
+            alias = fw.pipes[p1.id].aliases[p1.sensors[0]]
+            return [Finding(self.id, self.version, p0.id, (alias,), fw.window.start, fw.window.end, 0.4, "x.")]
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [Crossed()])
+    assert summary["ran_ok"] == [] and "not an expected alias" in json.loads(logs[0])["error"]
+    assert set(written(facility, fake).values()) == {(1.0, "")}
+
+
+def test_unknown_kind_is_logged_and_skipped(facility):
+    class Odd(DqOn):
+        kind = "sensor"
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [Odd(facility, "P-007", "flow_in", 0.9)])
+    assert summary["ran_ok"] == [] and "unknown detector kind" in json.loads(logs[0])["error"]
+    with pytest.raises(ValueError, match="kind"):
+        handler.check_detectors([Odd(facility, "P-007", "flow_in", 0.9)], facility.tunables)
+
+
+def _without(tunables, detector_id, key):
+    detectors = {k: dict(v) for k, v in tunables["detectors"].items()}
+    if key is None:
+        del detectors[detector_id]
+    else:
+        del detectors[detector_id][key]
+    return {**tunables, "detectors": detectors}
+
+
+@pytest.mark.parametrize(
+    ("detector_id", "key"),
+    [("dq_flatline", "min_run_s"), ("dq_flatline", "full_s"), ("dq_flatline", "rel_tol"), ("dq_stuck", "min_run_s"), ("dq_stuck", "full_s"), ("dq_stuck", None)],
+)
+def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, detector_id, key):
+    import dataclasses
+
+    broken = dataclasses.replace(facility, tunables=_without(facility.tunables, detector_id, key))
+    monkeypatch.setattr(handler, "load", lambda path, stage: broken)
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    with pytest.raises(ValueError, match=detector_id):
+        handler.runtime({"STAGE": STAGE}, client=FakeSiteWise({}))
+    assert handler._RUNTIME is None
+
+
+@pytest.mark.parametrize(
+    ("detector_id", "patch"),
+    [
+        ("dq_flatline", {"rel_tol": -1.0}),
+        ("dq_flatline", {"full_s": 0}),
+        ("dq_stuck", {"min_run_s": 90}),  # above full_s
+        ("dq_stuck", {"full_s": "60"}),
+        ("dq_stuck", {"min_run_s": True}),
+        ("dq_flatline", {"rel_tol": 0.5}),  # would rail every in-range value
+        ("dq_stuck", {"full_s": 900}),  # must be < window_len_s
+        ("dq_flatline", {"min_run_s": 900, "full_s": 1000}),
+    ],
+)
+def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
+    detectors = {k: dict(v) for k, v in facility.tunables["detectors"].items()}
+    detectors[detector_id].update(patch)
+    with pytest.raises(ValueError, match=detector_id):
+        handler.check_detectors(handler.PASS1_DETECTORS, {**facility.tunables, "detectors": detectors})
+
+
+def test_bundled_tunables_pass_the_cold_start_check(facility):
+    handler.check_detectors(handler.PASS1_DETECTORS, facility.tunables)
+    assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
+    assert dict(facility.tunables["detectors"]["dq_stuck"]) == {"min_run_s": 30, "full_s": 60}
+
+
+def test_dq_stuck_cold_start_needs_dq_flatline_rel_tol(facility):
+    """dq_stuck reads dq_flatline's rel_tol (one definition of railed), so it validates it too."""
+    from detect.core.detectors import DqStuck
+
+    with pytest.raises(ValueError, match="dq_flatline"):
+        handler.check_detectors([DqStuck()], _without(facility.tunables, "dq_flatline", "rel_tol"))
+
+
+def test_duplicate_detector_ids_fail_the_cold_start(facility):
+    from detect.core.detectors import DqStuck
+
+    with pytest.raises(ValueError, match="duplicate detector ids.*dq_stuck"):
+        handler.check_detectors([*handler.PASS1_DETECTORS, DqStuck()], facility.tunables)
+
+
+def test_pipe_detector_finding_for_another_pipe_is_skipped(facility):
+    p0, p1 = facility.pipes[0], facility.pipes[1]
+
+    class Misfiled(DqOn):
+        def detect(self, pw, t):  # this pipe's alias, another pipe's id
+            if pw.pipe.pipe_id != p0.id:
+                return []
+            return [Finding(self.id, "1", p1.id, (pw.pipe.aliases[p0.sensors[0]],), pw.window.start, pw.window.end, 0.9, "x.")]
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [Misfiled(facility, p0.id, p0.sensors[0], 0.9)])
+    assert summary["ran_ok"] == []
+    err = json.loads(logs[0])
+    assert err["detector_id"] == "dq_fake" and p1.id in err["error"]
+    assert set(written(facility, fake).values()) == {(1.0, "")}
