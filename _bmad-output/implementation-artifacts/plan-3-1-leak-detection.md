@@ -3,7 +3,7 @@ title: 'Story 3.1: Detect leaks from mass balance and methane rise'
 type: 'feature'
 ticket: 'OG-14'
 created: '2026-09-29'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -83,7 +83,7 @@ context:
 - [x] `facility/facility.yaml` -- calibrated tunables, with the evidence in Implementation Notes. -- config.
 - [x] Tests: every matrix row except Live, on synthetic windows and simulator physics, including the 30-minute no-false-positive runs and dq exclusion. -- matrix.
 - [x] `docs/ci-cd.md` §7 -- what the leak checks mean, where to see findings (summary log) until 3.3, and how to try them. -- operability.
-- [ ] Live (the orchestrator runs this). -- acceptance.
+- [x] Live (the orchestrator runs this). -- acceptance.
 
 **Acceptance Criteria:**
 - Given the repo, when `uv run pytest -q` runs, then all tests pass.
@@ -110,6 +110,13 @@ context:
   - `check_pass2_set` enforces `detector_id == det.id` and one finding per (detector, pipe). `check_passes` at cold start requires pass-1 ids to be `dq_*` and pass-2 ids not to be, on top of cross-pass id uniqueness.
   - `check_avg_tunables` validates `window_len_s` and requires `window_len_s - avg_s >= min_points`.
   - Summary findings carry `explanation` and `evidence_aliases`, with confidence rounded to 3 decimals. A new `suppressed: [{detector, pipe, reason}]` list comes from each detector's `requires`.
+
+- Live check (2026-09-29 02:57–03:01 +08, `poc-dj`, deploy run 36467288572, pre-review code `15487f6`):
+  - Default `leak` injected on P-007 at 18:57:25Z.
+  - The runs at 18:56:48–18:58:48 had no findings.
+  - The 18:59:48 run (window end 18:58:00, 35 s of leak) gave `leak_mass_balance` P-007 0.69 and `leak_methane_rise` P-007 0.58, and no other pipe.
+  - Consistent with the calibration (1.0 at 60 s of leak).
+  - Injection cancelled; switched off with the reviewed code (`a96fddf`).
 
 ## Plan Change Log
 
