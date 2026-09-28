@@ -3,7 +3,7 @@ title: 'Story 3.2: Flag a pipe that behaves differently from its peers'
 type: 'feature'
 ticket: 'OG-15'
 created: '2026-09-29'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -76,7 +76,7 @@ context:
 - [x] `facility/facility.yaml` -- calibrated tunables, with the evidence in Implementation Notes. -- config.
 - [x] Tests (`tests/test_outlier_peer.py` and a handler test): every matrix row except Live. -- matrix.
 - [x] `docs/ci-cd.md` §7 -- what the outlier check means and how to read it. -- operability.
-- [ ] Live (the orchestrator runs this). -- acceptance.
+- [x] Live (the orchestrator runs this). -- acceptance.
 
 **Acceptance Criteria:**
 - Given the repo, when `uv run pytest -q` runs, then all tests pass.
@@ -104,6 +104,13 @@ context:
   - `handler._suppressed` uses `_pass2.trusted` / `dq_of` / `dq_min` and a new `_pass2.untrusted_reason`, and adds the detector's optional `skipped(fw, t)` (replaces `feature_sensors`): untrusted, too little data, unit mismatch, too low / negative, `only N pipes with data`. It now runs inside the detector's isolation.
   - Pipes with an empty or missing `peer_group` are skipped. Docs: masking starts at 4 of 6 (tests for 3 and 4 of 6), contract units, and the incident note for Story 3.3.
 - Calibration scripts in `.work/calib_outlier*.py` (gitignored). `cdk synth -c stage=poc-dj --quiet` exit 0 (run without AWS credentials).
+
+- Live check (2026-09-29 03:46–03:50 +08, `poc-dj`, deploy run 36473017107, pre-review code `c33b1d3`):
+  - Default leak on P-007 at 19:46:26Z.
+  - Three clean runs before the leak.
+  - The 19:48:54 run gave `outlier_peer` P-007 1.0 ("Unlike its 5 peers in fg-cs-10to15 (P-008, P-009, P-019, P-020, P-021) over the last 60 s: methane_ppm 159 vs peer median 2.047 (z +136.4); flow_ratio 0.9491 vs peer median 0.9998 (z -9.9)"), plus `leak_mass_balance` 0.637 and `leak_methane_rise` 0.523.
+  - No other pipe flagged.
+  - Injection cancelled; switched off with the reviewed code (`f24d86e`).
 
 ## Plan Change Log
 
