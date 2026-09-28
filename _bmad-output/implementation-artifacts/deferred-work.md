@@ -46,3 +46,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
   summary: Story 4.4 alarms must include detection Lambda Errors and Scheduler TargetErrorCount/InvocationDroppedCount (no retries, no DLQ by design).
   evidence: A detector failing every minute would otherwise leave stale _dq values unnoticed.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-3-dq-drift-gap.md`
+  summary: Add an offset-from-peers data-quality check, so a sensor that drifted and then stopped (constant offset) stays flagged.
+  evidence: dq_drift flags only an ongoing linear trend (R² gate); a completed drift clears while the calibration error remains.

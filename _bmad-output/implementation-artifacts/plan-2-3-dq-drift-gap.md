@@ -3,12 +3,12 @@ title: 'Story 2.3: Flag drifting and silent sensors'
 type: 'feature'
 ticket: 'OG-12'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: '1e5a6ce06469e00fc8fb3611002d0b8e0513ebf4'
 context:
@@ -88,7 +88,7 @@ Both are calibrated on real simulator output, so normal data (including normal i
 - [x] `tests/test_dq_detectors.py` -- every matrix row except Live, plus calibration tests on simulator physics (no false positives; the drift and gap targets). -- matrix.
 - [x] `tests/test_detect_handler.py` -- a run-level test with one drifting and one silent sensor; all others stay at 1.0. -- end to end.
 - [x] `docs/ci-cd.md` §7 -- both checks, their timing, and how to try them. -- operability.
-- [ ] Live (the orchestrator runs this). -- acceptance.
+- [x] Live (the orchestrator runs this). -- acceptance.
 
 **Acceptance Criteria:**
 - Given the repo, when `uv run pytest -q` runs, then all tests pass, including the calibration tests.
@@ -108,11 +108,32 @@ Both are calibrated on real simulator output, so normal data (including normal i
 - **One empty-window finding:** `dq_score.with_gap_rule(fw, findings)` adds the AD-13 rule's `dq_gap` only for an empty alias that no `dq_gap` finding names yet; `score_facility` uses it. With the detector running there is exactly one `dq_gap` finding per empty alias (the detector's); if the detector fails, the rule still gives 0.0 / `dq_gap` (tested end to end). `score()` is unchanged.
 - Calibration scripts lived in `.work/` (gitignored); the committed evidence is the calibration tests in `tests/test_dq_detectors.py` (5 normal facility windows: 4 times of day + a second seed, all 144 sensors, both detectors silent; drift on 5 pipes across 4 peer groups; shared change; leak steps; ingest lag).
 
+- Live check (2026-09-29 01:45–01:53 +08, `poc-dj`, deploy run 36459116772):
+  - `dq_drift` (`per_min` 0.5) was injected on P-010 `temperature` and `dq_gap` on P-020 `flow_out` at 17:45:25Z.
+  - At the 17:50:00Z window end (4.5 min of drift): P-010 `temperature_dq` = 0.0 / `dq_drift`; P-020 `flow_out_dq` = 0.0 / `dq_gap`; the other 142 sensors = 1.0.
+  - Injections cancelled; simulator and detection switched off with the reviewed code (`f808300`).
+
 ## Plan Change Log
 
 - 2026-09-29: `dq_drift` gains a fifth tunable, `min_r2` (R² of the residual line), as an extra condition for a non-zero confidence. The frozen confidence formula is unchanged above both thresholds. Reason and evidence in Implementation Notes.
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 0, medium 4, low 15, false 0. Outcome: 6 patch groups, 1 deferral, no loopback. The Verification Gap lens found no gaps.
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| ECH-1 | Overflow gives NaN slope/r2, so a full-confidence false drift | medium | patch | Finite guard. |
+| ECH-2..4, BH-8b | Degenerate tunables accepted (`min_points > fit_s`, `min_rate = 0`, `min_gap_s = 0`) | medium | patch | Cold-start checks. |
+| BH-3 | Window-end convention differs between the two detectors | low | patch | Half-open `[start, end)` in both. |
+| BH-4 | `dq_gap` assumes sorted input | medium | patch | Max GOOD timestamp. |
+| BH-10, ECH-5 | Explanation overstates the peer count | low | patch | Minimum peers used. |
+| BH-7, BH-8a, BH-2, BH-6 | All-BAD fallback; stale docstring; whole-second matching; faulty peers in the median | low | patch (doc) | Known limits documented. |
+| IA-R3 | Drift that stops clears while the offset remains | medium | defer | An offset-from-peers check is future work; documented. |
+| BH-1, BH-5 | Slow-rate sensors (`rate_hz` < 0.5 or < 1/30) | low | reject | Every contract is 1 Hz. |
+| BH-11 | Timing claims unmeasured | low | reject | Measured by the live check (see Implementation Notes). |
+| BH-12 | No cost guard | low | reject | Six-pipe groups; negligible. |
+| IA-C2 | Calibration at the physics level, not the pipeline level | low | reject | The live check exercises the deployed pipeline. |
 
 ## Verification
 
