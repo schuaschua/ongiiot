@@ -9,7 +9,9 @@ trailing ``fit_s`` seconds of the window, and its slope, divided by the sensor's
 Confidence ``0`` if ``rate < min_rate`` or the line explains less than ``min_r2`` of the residual's
 variance (the residual must keep moving in one direction: process wander, a step such as a leak, or a
 change shared by the whole peer group is not drift), else ``min(1, rate / full_rate)``. No finding
-with fewer than 2 peers with data in the fit span or fewer than ``min_points`` residual points.
+with fewer than 2 peers with data in the fit span or fewer than ``min_points`` residual points, and
+none if the fit overflows (non-finite rate or R²). The explanation names the fewest peers behind any
+residual point. Samples are taken from ``[window_end - fit_s, window_end)`` (the half-open window, AD-9).
 
 Tunables (``tunables.detectors.dq_drift``): ``fit_s``, ``min_points``, ``min_rate``, ``full_rate``,
 ``min_r2``.
@@ -39,8 +41,9 @@ def fit_line(xs: list[float], ys: list[float]) -> tuple[float, float]:
     """``(slope, r2)`` of the least-squares line through the points (``r2`` 0 for a flat residual)."""
     n = len(xs)
     mx, my = sum(xs) / n, sum(ys) / n
-    sxx = sum((x - mx) ** 2 for x in xs)
-    syy = sum((y - my) ** 2 for y in ys)
+    # Products, not ``** 2``: a float power raises OverflowError, a product overflows to inf (checked by the caller).
+    sxx = sum((x - mx) * (x - mx) for x in xs)
+    syy = sum((y - my) * (y - my) for y in ys)
     sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
     if sxx <= 0:
         return 0.0, 0.0
@@ -58,10 +61,10 @@ class DqDrift:
         mine = own_tunables(t, ID, KEYS)
         if not 0 < mine["fit_s"] <= t["window_len_s"]:
             raise ValueError(f"tunables.detectors.{ID}.fit_s must be > 0 and <= window_len_s")
-        if mine["min_points"] < 3:
-            raise ValueError(f"tunables.detectors.{ID}.min_points must be >= 3")
-        if not 0 <= mine["min_rate"] <= mine["full_rate"] or mine["full_rate"] <= 0:
-            raise ValueError(f"tunables.detectors.{ID}: need 0 <= min_rate <= full_rate and full_rate > 0")
+        if not float(mine["min_points"]).is_integer() or not 3 <= mine["min_points"] <= mine["fit_s"]:
+            raise ValueError(f"tunables.detectors.{ID}.min_points must be a whole number, >= 3 and <= fit_s")
+        if not 0 < mine["min_rate"] <= mine["full_rate"]:
+            raise ValueError(f"tunables.detectors.{ID}: need 0 < min_rate <= full_rate")
         if not 0 <= mine["min_r2"] <= 1:
             raise ValueError(f"tunables.detectors.{ID}.min_r2 must be in [0, 1]")
 
@@ -110,17 +113,19 @@ class DqDrift:
             return None
         xs: list[float] = []
         ys: list[float] = []
+        used = len(peers)  # fewest peers behind any residual point
         for sec, v in sorted(data[p.pipe_id].items()):
             others = [vals[sec] for vals in peers.values() if sec in vals]
             if len(others) < MIN_PEERS:
                 continue
+            used = min(used, len(others))
             xs.append(sec - end_s)
             ys.append(v - _median(others))
         if len(xs) < max(mine["min_points"], 3):
             return None
         slope, r2 = fit_line(xs, ys)
         rate = abs(slope) * 60.0 / span
-        if rate < mine["min_rate"] or r2 < mine["min_r2"]:
+        if not (math.isfinite(rate) and math.isfinite(r2)) or rate < mine["min_rate"] or r2 < mine["min_r2"]:
             return None
         c = min(1.0, rate / mine["full_rate"])
         if c <= 0:
@@ -137,7 +142,7 @@ class DqDrift:
             window_end=end,
             confidence=c,
             explanation=(
-                f"{m} has drifted {direction} from the median of its {len(peers)} peer pipes "
+                f"{m} has drifted {direction} from the median of its {used} peer pipes "
                 f"by {per_min} over the last {mine['fit_s']:.0f} s."
             ),
         )

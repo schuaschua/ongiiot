@@ -415,6 +415,10 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("dq_drift", {"min_rate": 0, "full_rate": 0}),
         ("dq_drift", {"min_r2": 1.5}),
         ("dq_drift", {"min_r2": "0.9"}),
+        ("dq_drift", {"min_points": 301}),  # more than fit_s seconds can hold
+        ("dq_drift", {"min_points": 150.5}),
+        ("dq_drift", {"min_rate": 0}),
+        ("dq_gap", {"min_gap_s": 0}),
         ("dq_gap", {"min_gap_s": 90}),  # above full_gap_s
         ("dq_gap", {"min_gap_s": -1}),
         ("dq_gap", {"full_gap_s": 0, "min_gap_s": 0}),

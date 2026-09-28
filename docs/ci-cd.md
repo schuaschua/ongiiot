@@ -170,7 +170,10 @@ Known limits:
 - `dq_stuck` assumes non-quantized readings. A sensor that reports in coarse steps (for example whole degrees) and holds steady can repeat an exact value for a minute and be flagged.
 - `dq_drift` only sees drift that is clearly steadier than normal process wander. The simulator's flows and pressures wander by up to about 8e-3 of span per minute over 5 minutes (each pipe has its own process disturbance), so the check relies on `min_r2` to ignore them, and a slow drift on those sensors is found only when it is a clean line. On a 50–400 K temperature, drift below about 0.3 K/min over 5 minutes does not reach `min_r2` (0.25 K/min fits with R² 0.965) and is not flagged.
 - `dq_drift` needs at least 2 peers with data. In a peer group of 3 pipes (AD-14 requires at least 4) the median of 2 peers includes the drifting sensor, so its peers could be flagged too.
-- `dq_drift` flags drift while it is happening, not a standing offset: a real sensor that drifted and then stopped keeps its offset but clears once the fit no longer holds a line.
+- `dq_drift` flags drift while it is happening, not a standing offset: a sensor that drifted and then stopped keeps its offset but clears once the fit no longer holds a line. A check for a standing offset from peers is future work.
+- `dq_drift` matches peers by whole second, which assumes in-phase 1 Hz sampling across pipes (true for the simulator). Sensors sampled out of phase or at other rates would share fewer points and may fall under `min_points`.
+- A peer that is itself faulty still feeds the median. With the current 6-pipe groups the median of 5 peers absorbs one bad peer; smaller groups are less robust.
+- A sensor whose samples are all BAD or UNCERTAIN scores `0.0` / `dq_gap` only through the `dq_gap` detector. If that detector fails in a run, the fallback rule in `dq_score.py` covers only sensors with no samples at all, so an all-BAD sensor would score `1.0` for that run.
 
 To try the checks on a developer stage with the simulator on (section 5), inject a fault on each sensor:
 

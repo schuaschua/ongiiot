@@ -543,3 +543,54 @@ def test_drift_ignores_empty_unit_and_bad_contract():
         else:
             (f,) = found
             assert expected in f.explanation
+
+
+# -- review round 1 --------------------------------------------------------------------------------
+
+
+def _with(fw, alias, samples):
+    return FacilityWindow(fw.pipes, Window(fw.window.start, fw.window.end, {**fw.window.series, alias: samples}))
+
+
+def _gap_of(pipe_id, samples, m="flow_out"):
+    pipe = METAS[pipe_id]
+    data = {a: series([healthy(i, mm) for i in range(900)]) for mm, a in pipe.aliases.items()}
+    data[pipe.aliases[m]] = samples
+    return GAP.detect(PipeWindow(pipe, Window(START, END, data)), T)
+
+
+def test_drift_overflow_gives_no_finding():
+    """Huge finite values overflow the fit (inf / NaN); that must never read as full confidence."""
+    fw = facility_window(T_END)
+    alias = METAS["P-010"].aliases["temperature"]
+    huge = [Sample(s.ts, 1e308 if i % 2 else -1e308, "GOOD") for i, s in enumerate(fw.window.series[alias])]
+    assert [f for f in DRIFT.detect(_with(fw, alias, huge), T) if f.evidence_aliases == (alias,)] == []
+
+
+def test_window_end_is_exclusive_for_both():
+    """AD-9 windows are [start, end): a sample stamped exactly at window_end is not in the window."""
+    base = series([healthy(i, "flow_out") for i in range(870)], end=END - timedelta(seconds=30))  # last at end - 31 s
+    at_end = [Sample(END, healthy(0, "flow_out"), "GOOD")]
+    (f,) = _gap_of("P-003", base + at_end)
+    assert f.confidence == pytest.approx(31 / 60)
+    (f,) = _gap_of("P-003", at_end)
+    assert "no GOOD samples in the window" in f.explanation
+    # dq_drift ignores it too: a wild value at window_end does not spoil a clean drift.
+    fw = facility_window(T_END, [inj("dq_drift", "P-010", "temperature", T_END - 300, 30, per_min=0.5)])
+    alias = METAS["P-010"].aliases["temperature"]
+    wild = _with(fw, alias, [*fw.window.series[alias], Sample(END, -1e6, "GOOD")])
+    assert brief(DRIFT.detect(wild, T)) == [("dq_drift", "P-010", "temperature")]
+
+
+def test_gap_does_not_assume_sorted_input():
+    samples = series([healthy(i, "flow_out") for i in range(855)], end=END - timedelta(seconds=44))  # last at end - 45 s
+    (f,) = _gap_of("P-003", list(reversed(samples)))
+    assert f.confidence == 0.75
+
+
+def test_drift_explanation_names_the_fewest_peers_used():
+    fw = facility_window(T_END, [inj("dq_drift", "P-010", "temperature", T_END - 300, 30, per_min=0.5)])
+    alias = METAS["P-011"].aliases["temperature"]
+    half = [s for s in fw.window.series[alias] if s.ts < END - timedelta(seconds=150)]  # P-011 silent for the last 150 s
+    (f,) = [f for f in DRIFT.detect(_with(fw, alias, half), T) if f.pipe_id == "P-010"]
+    assert "median of its 4 peer pipes" in f.explanation
