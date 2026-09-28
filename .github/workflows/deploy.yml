@@ -1,0 +1,83 @@
+# Deploys run only by manual dispatch ("Run workflow"); starting the run is the approval.
+# `poc`: only from `main` (environment `poc`, branch rule `main`).
+# `poc-<initials>`: developer stages from any branch (environment `dev`).
+# Every deploy waits for the `test` job; no AWS access before it passes.
+# Runbook: docs/ci-cd.md
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Stage to deploy: poc (from main only) or poc-<initials> (e.g. poc-dj)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - run: uv run pytest -q
+
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      stage: ${{ steps.out.outputs.stage }}
+      environment: ${{ steps.out.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - name: Check dispatch stage
+        env:
+          STAGE: ${{ inputs.stage }}
+          REF: ${{ github.ref }}
+        run: >-
+          uv run python -c 'import os,sys; from facility.model import STAGE_RE; s=os.environ["STAGE"]; main=os.environ["REF"]=="refs/heads/main"; ok=(s=="poc" and main) or (s.startswith("poc-") and STAGE_RE.fullmatch(s)); sys.exit(0 if ok else f"refused stage {s!r}: poc deploys only from main; other stages must be poc-<initials>")'
+      - name: Resolve stage and environment
+        id: out
+        env:
+          STAGE: ${{ inputs.stage }}
+        run: |
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          if [ "$STAGE" = "poc" ]; then
+            echo "environment=poc" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: [test, resolve]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.environment }}
+    concurrency:
+      group: deploy-${{ needs.resolve.outputs.stage }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      STAGE: ${{ needs.resolve.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: uv sync --locked
+      # Deploy role: trusted only for the `poc` and `dev` environments of this repo.
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: npx --yes aws-cdk@2.1143.0 deploy "*-$STAGE" -c "stage=$STAGE" --require-approval never

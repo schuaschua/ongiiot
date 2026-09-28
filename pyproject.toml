@@ -1,0 +1,27 @@
+[project]
+name = "og-iiot"
+version = "0.1.0"
+description = "Pipe Integrity Streaming POC"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "boto3>=1.43.103",
+    "python-ulid>=4.0.1",
+    "pyyaml",
+]
+
+[dependency-groups]
+infra = [
+    "aws-cdk-lib==2.271.0",
+    "constructs",
+]
+dev = [
+    "pytest",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev", "infra"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

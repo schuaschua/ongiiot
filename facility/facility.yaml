@@ -1,0 +1,204 @@
+# Facility model, schema v1 (ARCHITECTURE-SPINE AD-2, AD-14).
+# The single authored source for pipes, sensors, pipe attributes, data contracts and tunables.
+# Parsed only by facility/model.py. Aliases are derived, never authored here.
+version: 1
+facility: {id: lng1, name: LNG Facility 1}
+areas: [train1, train2]
+
+# Default data contract per measurement. Units are fixed by the Conventions unit table.
+contracts:
+  pressure_in:  {unit: Pa, min: 0, max: 10000000, rate_hz: 1, owner: Process Engineering}
+  pressure_out: {unit: Pa, min: 0, max: 10000000, rate_hz: 1, owner: Process Engineering}
+  flow_in:      {unit: kg/s, min: 0, max: 50, rate_hz: 1, owner: Process Engineering}
+  flow_out:     {unit: kg/s, min: 0, max: 50, rate_hz: 1, owner: Process Engineering}
+  temperature:  {unit: K, min: 50, max: 400, rate_hz: 1, owner: Instrumentation}
+  methane_ppm:  {unit: ppmv, min: 0, max: 10000, rate_hz: 1, owner: HSE}
+
+pipes:
+  - id: P-001
+    area: train1
+    service: feed_gas
+    material: stainless_steel
+    age_years: 5
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-002
+    area: train1
+    service: feed_gas
+    material: stainless_steel
+    age_years: 7
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-003
+    area: train1
+    service: feed_gas
+    material: stainless_steel
+    age_years: 9
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-004
+    area: train1
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 15
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+    contract_overrides: {temperature: {min: 90, max: 250}}
+  - id: P-005
+    area: train1
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 17
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-006
+    area: train1
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 19
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-007
+    area: train1
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 12
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+    contract_overrides: {flow_in: {max: 80}, flow_out: {max: 80}}
+  - id: P-008
+    area: train1
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 10
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-009
+    area: train1
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 14
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-010
+    area: train1
+    service: flare_header
+    material: carbon_steel
+    age_years: 20
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-011
+    area: train1
+    service: flare_header
+    material: carbon_steel
+    age_years: 22
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-012
+    area: train1
+    service: flare_header
+    material: carbon_steel
+    age_years: 24
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-013
+    area: train2
+    service: feed_gas
+    material: stainless_steel
+    age_years: 6
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-014
+    area: train2
+    service: feed_gas
+    material: stainless_steel
+    age_years: 8
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-015
+    area: train2
+    service: feed_gas
+    material: stainless_steel
+    age_years: 10
+    peer_group: fd-ss-5to10
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-016
+    area: train2
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 16
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+    contract_overrides: {temperature: {min: 90, max: 250}}
+  - id: P-017
+    area: train2
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 18
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-018
+    area: train2
+    service: boil_off_gas
+    material: stainless_steel
+    age_years: 20
+    peer_group: bog-ss-15to20
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-019
+    area: train2
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 11
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-020
+    area: train2
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 13
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-021
+    area: train2
+    service: fuel_gas
+    material: carbon_steel
+    age_years: 15
+    peer_group: fg-cs-10to15
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-022
+    area: train2
+    service: flare_header
+    material: carbon_steel
+    age_years: 21
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+    contract_overrides: {methane_ppm: {max: 20000, owner: HSE Flare Systems}}
+  - id: P-023
+    area: train2
+    service: flare_header
+    material: carbon_steel
+    age_years: 23
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+  - id: P-024
+    area: train2
+    service: flare_header
+    material: carbon_steel
+    age_years: 25
+    peer_group: fl-cs-20to25
+    sensors: [pressure_in, pressure_out, flow_in, flow_out, temperature, methane_ppm]
+
+tunables:
+  window_len_s: 900
+  ingest_lag_s: 60
+  quiet_runs_to_close: 5
+  reopen_grace_s: 600
+  dq_min: 0.5
+  detectors:                     # keys under each id are owned by that detector
+    leak_mass_balance: {}
+    leak_methane_rise: {}
+    outlier_peer: {}
+    dq_flatline: {}
+    dq_stuck: {}
+    dq_drift: {}
+    dq_gap: {}
