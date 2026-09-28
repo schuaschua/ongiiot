@@ -31,7 +31,7 @@ context:
 - Tables `sim-control-<stage>` and `injection-log-<stage>`: partition key `pk` (string), no sort key, on-demand billing. `RETAIN` for `poc`, `DESTROY` for `poc-<initials>`.
 - Task role, AD-17 as far as IAM allows:
   - `iotsitewise:BatchPutAssetPropertyValue` and `iotsitewise:DescribeTimeSeries` on this stage's pipe asset ARNs only;
-  - `dynamodb:Scan` and `dynamodb:GetItem` on `sim_control`;
+  - `dynamodb:Scan` on `sim_control` (GetItem dropped in review, human-approved 2026-09-28: the simulator never calls it);
   - `dynamodb:PutItem` on `injection_log`;
   - nothing else. The execution role is separate: ECR pull and logs only.
 - Decision (2026-09-28, AWS service reference): IAM cannot scope `BatchPutAssetPropertyValue` by alias. No action supports the `iotsitewise:propertyAlias` condition key. The code guard in `sim/writer.py` stays the raw/derived boundary, and the spine records this against AD-17.
