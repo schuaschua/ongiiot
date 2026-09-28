@@ -17,7 +17,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 CDK_CLI = "aws-cdk@2.1143.0"
 ACTION_MAJORS = {
     "actions/checkout": "v7",
-    "astral-sh/setup-uv": "v10",
+    "astral-sh/setup-uv": "v10.2.0",  # publishes exact tags only (no floating v10)
     "actions/setup-node": "v7",
     "aws-actions/configure-aws-credentials": "v6",
 }
