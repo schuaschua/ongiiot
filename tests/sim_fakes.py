@@ -14,18 +14,24 @@ class FakeClientError(Exception):
 
 
 class FakeSiteWise:
-    def __init__(self, unassociated=(), missing=(), throttle_first: int = 0, entry_errors=None):
+    def __init__(self, unassociated=(), missing=(), throttle_first: int = 0, entry_errors=None, pending=(), orphan=()):
         self.calls: list[list[dict]] = []
         self.described: list[str] = []
         self.unassociated = set(unassociated)
         self.missing = set(missing)
         self.throttle_first = throttle_first
         self.entry_errors = list(entry_errors or [])  # queue of errorCode per call (applied to first entry)
+        # Real SiteWise: no time series until the first write. `pending` aliases then appear
+        # associated; `orphan` aliases (no asset property) then appear as disassociated streams.
+        self.pending = set(pending)
+        self.orphan = set(orphan)
 
     def describe_time_series(self, alias):
         self.described.append(alias)
-        if alias in self.missing:
+        if alias in self.missing or ((alias in self.pending or alias in self.orphan) and alias not in self.values()):
             raise FakeClientError("ResourceNotFoundException", alias)
+        if alias in self.orphan:
+            return {"alias": alias, "dataType": "DOUBLE", "timeSeriesId": f"ts-{alias}"}
         out = {"alias": alias, "dataType": "DOUBLE", "timeSeriesId": f"ts-{alias}"}
         if alias not in self.unassociated:
             out |= {"assetId": "asset-1", "propertyId": f"prop-{alias}"}

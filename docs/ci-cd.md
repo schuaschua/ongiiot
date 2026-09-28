@@ -122,6 +122,9 @@ Per-stage bootstrap isolation (separate qualifiers or accounts per stage) would 
 
 ## Troubleshooting
 
+- **`Resource of type 'AWS::Logs::LogGroup' with identifier '...' already exists`** after a failed first deploy: the stack rolled back, but a Lambda had already logged and recreated its named log group. Delete the listed log groups (`aws logs delete-log-group --log-group-name <name> --region ap-southeast-1`), then deploy again.
+- **Simulator task exits at startup**: on a fresh stage SiteWise has no time series until the first write, so the simulator accepts "not found" aliases at startup and checks them strictly after its first write. It stops (exit 3, "refusing to continue") if an alias is still missing or is not attached to an asset property.
+
 - **Subject format**: this repo uses GitHub's immutable OIDC subject, so tokens carry `repo:schuaschua@83538399/ongiiot@1392670803:…` (numeric owner and repo IDs), not `repo:schuaschua/ongiiot:…`. Check with `gh api repos/schuaschua/ongiiot/actions/oidc/customization/sub`.
 
 - **`Not authorized to perform sts:AssumeRoleWithWebIdentity`**: the run is from a fork or another repo, the job lacks `id-token: write`, the job's environment is not `poc` or `dev` (deploy role), the job is not a `pull_request` run (diff role), or the role variable is wrong.
