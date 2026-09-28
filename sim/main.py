@@ -83,9 +83,16 @@ def raw_aliases(facility: Facility) -> list[str]:
     return [facility.alias(p.id, m) for p in facility.pipes for m in p.sensors]
 
 
-def check_aliases(client: Any, aliases: list[str]) -> None:
-    """AD-1: every raw alias must be associated with an asset property; refuse otherwise."""
-    bad = []
+def check_aliases(client: Any, aliases: list[str], *, allow_pending: bool = False) -> list[str]:
+    """AD-1: every raw alias must be associated with an asset property; refuse otherwise.
+
+    SiteWise creates an asset property's time series only on its first write, so on a fresh
+    stage every alias is "not found". With ``allow_pending`` those aliases are returned as
+    pending (checked again after the first write); an existing but unassociated series is
+    still refused. Returns the pending aliases.
+    """
+    bad: list[str] = []
+    pending: list[str] = []
     for alias in aliases:
         try:
             ts = client.describe_time_series(alias=alias)
@@ -93,13 +100,14 @@ def check_aliases(client: Any, aliases: list[str]) -> None:
             response = getattr(exc, "response", None)
             code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
             if code == "ResourceNotFoundException":
-                bad.append(alias)
+                (pending if allow_pending else bad).append(alias)
                 continue
             raise StartupError(f"DescribeTimeSeries failed for {alias} ({code or type(exc).__name__}): {exc}") from exc
         if not ts.get("assetId") or not ts.get("propertyId"):
             bad.append(alias)
     if bad:
         raise StartupError(f"aliases not associated with an asset property: {', '.join(bad)}")
+    return pending
 
 
 # -- JSON logs -------------------------------------------------------------------------------
@@ -147,8 +155,12 @@ class Simulator:
         seed: int = 0,
         flush_s: float = 5.0,
         poll_s: float = POLL_MAX_S,
+        verify_after_first_write: Callable[[], None] | None = None,
     ):
         self.facility = facility
+        # Called once after the first successful flush; a StartupError stops the simulator.
+        self._verify = verify_after_first_write
+        self.failed = False
         self.writer = RawWriter(sitewise, allowed=raw_aliases(facility), sleep=sleep)
         self.poller = ControlPoller(control_table, log_table, facility, poll_s=poll_s)
         self._clock = clock
@@ -194,6 +206,14 @@ class Simulator:
             LOG.error("sitewise flush failed; values dropped", extra={"fields": {"error": str(exc)}})
             return
         LOG.debug("flushed", extra={"fields": {"values": n}})
+        if n and self._verify is not None:
+            verify, self._verify = self._verify, None
+            try:
+                verify()
+            except StartupError as exc:
+                LOG.error("refusing to continue", extra={"fields": {"error": str(exc)}})
+                self.failed = True
+                self.stop()
 
     def run(self, max_ticks: int | None = None) -> int:
         """Emit one sample set per wall-clock second until stopped. Returns ticks run."""
@@ -262,10 +282,15 @@ def main(
         log_table = log_table or aws[2]
 
     try:
-        check_aliases(startup_client, raw_aliases(facility))
+        pending = check_aliases(startup_client, raw_aliases(facility), allow_pending=True)
     except StartupError as exc:
         LOG.error("refusing to start", extra={"fields": {"error": str(exc)}})
         return 3
+    verify = None
+    if pending:
+        # Fresh stage: these series appear on the first write; then all must be associated.
+        LOG.info("aliases pending first write", extra={"fields": {"count": len(pending)}})
+        verify = lambda: check_aliases(startup_client, pending)  # noqa: E731
 
     sim = Simulator(
         facility,
@@ -277,12 +302,13 @@ def main(
         seed=settings.seed,
         flush_s=settings.flush_s,
         poll_s=settings.poll_s,
+        verify_after_first_write=verify,
     )
     if install_signals and threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: sim.stop())
     sim.run(max_ticks=max_ticks)
-    return 0
+    return 3 if sim.failed else 0
 
 
 if __name__ == "__main__":

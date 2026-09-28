@@ -211,14 +211,50 @@ def test_main_checks_every_alias_then_runs(capsys):
     assert any(line["msg"] == "simulator started" and line["config_hash"] == F.config_hash() for line in lines)
 
 
-@pytest.mark.parametrize("kind", ["unassociated", "missing"])
-def test_main_refuses_to_start_on_unassociated_alias(capsys, kind):
+def test_main_refuses_to_start_on_unassociated_alias(capsys):
     alias = F.alias("P-012", "temperature")
-    code, fake = run_main(sitewise=FakeSiteWise(**{kind: [alias]}))
-    assert code != 0
+    code, fake = run_main(sitewise=FakeSiteWise(unassociated=[alias]))
+    assert code == 3
     assert fake.calls == []
     err = [line for line in logs(capsys) if line["level"] == "ERROR"]
     assert err and alias in err[0]["error"]
+
+
+def all_aliases():
+    return [F.alias(p.id, m) for p in F.pipes for m in p.sensors]
+
+
+def test_fresh_stage_starts_and_verifies_after_first_write(capsys):
+    # A new stage: no series exist until written; after the first flush all are associated.
+    fake = FakeSiteWise(pending=all_aliases())
+    code, fake = run_main(sitewise=fake, max_ticks=12)
+    assert code == 0
+    assert fake.calls  # it wrote
+    lines = logs(capsys)
+    assert any(line["msg"] == "aliases pending first write" and line["count"] == len(all_aliases()) for line in lines)
+    assert not [line for line in lines if line["level"] == "ERROR"]
+    # each alias described twice: at startup (pending) and after the first write
+    assert sorted(fake.described) == sorted(all_aliases() * 2)
+
+
+def test_stops_after_first_write_when_an_alias_has_no_asset_property(capsys):
+    orphan = F.alias("P-012", "temperature")
+    fake = FakeSiteWise(pending=[a for a in all_aliases() if a != orphan], orphan=[orphan])
+    code, fake = run_main(sitewise=fake, max_ticks=30)
+    assert code == 3
+    lines = logs(capsys)
+    err = [line for line in lines if line["level"] == "ERROR"]
+    assert err[0]["msg"] == "refusing to continue" and orphan in err[0]["error"]
+    # it stopped at the first flush (after 6 ticks), not after 30
+    assert any(line["msg"] == "simulator stopped" and line["ticks"] < 30 for line in lines)
+
+
+def test_still_missing_after_first_write_is_refused(capsys):
+    alias = F.alias("P-012", "temperature")
+    code, _ = run_main(sitewise=FakeSiteWise(missing=[alias]), max_ticks=12)
+    assert code == 3
+    err = [line for line in logs(capsys) if line["level"] == "ERROR"]
+    assert err[0]["msg"] == "refusing to continue" and alias in err[0]["error"]
 
 
 def test_main_config_errors(capsys):

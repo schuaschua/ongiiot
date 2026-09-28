@@ -288,6 +288,7 @@ def test_seed_iam_grant_pinned_to_pipe_assets(synthesized):
     fn_id = stack.get_logical_id(stack.seed.function.node.default_child)
     role_ref = tpl["Resources"][fn_id]["Properties"]["Role"]["Fn::GetAtt"][0]
     expected = [{"Fn::GetAtt": [stack.get_logical_id(a), "AssetArn"]} for a in stack.pipe_assets.values()]
+    expected.append(stack.resolve(stack.format_arn(service="iotsitewise", resource="time-series", resource_name="*")))
     grants = []
     for r in tpl["Resources"].values():
         if r["Type"] != "AWS::IAM::Policy" or {"Ref": role_ref} not in r["Properties"]["Roles"]:

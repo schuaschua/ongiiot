@@ -12,14 +12,14 @@ Both roles may also read `/cdk-bootstrap/hnb659fds/version`. Neither has any dir
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | pull request to `main`, push to `main` | `test` (pytest), `synth` (`cdk synth -c stage=poc`, no AWS), `diff` (PRs only, diff role: `cdk diff "*-poc" --method template`). Never deploys. |
-| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc`, from `main` only | `test`, then deploys `*-poc` in the `poc` environment |
+| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc`, from `main` only | `test`, then deploys `*-poc` in the `poc` environment (input `simulator`: `on` or `off`, see section 5) |
 | `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc-<initials>`, any branch | `test`, then deploys `*-poc-<initials>` in the `dev` environment |
 
 Nothing deploys automatically. A push or merge to `main` only runs `ci.yml`. Starting the `deploy` run is the approval: GitHub Team does not support required reviewers on private repos, so there is no separate approval step.
 
 In `deploy.yml`, the `deploy` job needs both `test` and `resolve`. If the tests fail, AWS is never touched.
 
-The CDK CLI is pinned to `aws-cdk@2.1143.0` (Node 22). Python deps come from `uv.lock` (`uv sync --locked`).
+The CDK CLI is pinned to `aws-cdk@2.1143.0` (Node 22). Python deps come from `uv.lock` (`uv sync --locked`). The deploy builds the simulator image (`sim/Dockerfile`, linux/amd64) with the runner's Docker and publishes it through the CDK image-publishing bootstrap role; `ci.yml`'s `cdk synth` does not build it.
 
 ## 1. One-time AWS setup
 
@@ -69,6 +69,35 @@ gh workflow run deploy.yml --ref <branch> -f stage=poc-dj
 
 The stage must be `poc-` followed by 1 to 12 lowercase letters or digits (`facility/model.py` `STAGE_RE`, checked with `fullmatch`). The `resolve` job refuses `poc` from a branch other than `main`, `prod`, `poc-DJ!` and anything else before any AWS call. The tests must pass, then the deploy targets only `*-poc-<initials>`.
 
+## 5. Stopping and starting the simulator
+
+Each stage runs one simulator task on ECS Fargate (`SimulatorStack-<stage>`), which is expected to write every raw alias at 1 Hz. This is confirmed only once the first `poc-<initials>` deploy has run. It runs only while testing. The `deploy` workflow has a required `simulator` input, `on` (default) or `off`, passed to CDK as `-c simulator=<value>`:
+
+- `on` sets the service's desired count to 1.
+- `off` sets it to 0. Nothing else changes: the `sim-control-<stage>` and `injection-log-<stage>` tables and the SiteWise history stay.
+
+To stop or start it, dispatch the deploy for the same stage with the other value:
+
+```bash
+gh workflow run deploy.yml --ref <branch> -f stage=poc-dj -f simulator=off   # stop
+gh workflow run deploy.yml --ref <branch> -f stage=poc-dj -f simulator=on    # start
+```
+
+For `poc` use `--ref main`. Any deploy without `-f simulator=off` starts the simulator again, because the default is `on`.
+
+After a start, fresh values should appear within about 2 minutes. Check a raw alias (`/<stage>/lng1/<area>/<pipe_id>/<measurement>` for developer stages, `/lng1/<area>/<pipe_id>/<measurement>` for `poc`), and the task log group `/ecs/simulator-<stage>`:
+
+```bash
+aws iotsitewise get-asset-property-value --region ap-southeast-1 \
+  --property-alias /poc-dj/lng1/train1/P-007/flow_in
+```
+
+Allow at least 30 minutes of warm-up before a demo or a detection test (AD-15: two detection windows of history).
+
+- **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
+- **Shared network:** all stages run in one VPC, `SharedNetworkStack` (fixed name, no stage suffix). The first stage deploy creates it, because every `SimulatorStack-<stage>` depends on it; later deploys reuse it. Deleting a stage leaves it in place.
+- **`poc` tables are retained:** `sim-control-poc` and `injection-log-poc` have fixed names and `RETAIN`. After deleting `SimulatorStack-poc`, delete those tables (or import them into the stack) before redeploying, or the deploy fails because the names already exist.
+
 ## What this does and does not protect
 
 Protected:
@@ -92,6 +121,9 @@ Not protected (residual risk):
 Per-stage bootstrap isolation (separate qualifiers or accounts per stage) would close the gaps above that come from the shared bootstrap roles. It is deferred (spine, Deferred).
 
 ## Troubleshooting
+
+- **`Resource of type 'AWS::Logs::LogGroup' with identifier '...' already exists`** after a failed first deploy: the stack rolled back, but a Lambda had already logged and recreated its named log group. Delete the listed log groups (`aws logs delete-log-group --log-group-name <name> --region ap-southeast-1`), then deploy again.
+- **Simulator task exits at startup**: on a fresh stage SiteWise has no time series until the first write, so the simulator accepts "not found" aliases at startup and checks them strictly after its first write. It stops (exit 3, "refusing to continue") if an alias is still missing or is not attached to an asset property.
 
 - **Subject format**: this repo uses GitHub's immutable OIDC subject, so tokens carry `repo:schuaschua@83538399/ongiiot@1392670803:…` (numeric owner and repo IDs), not `repo:schuaschua/ongiiot:…`. Check with `gh api repos/schuaschua/ongiiot/actions/oidc/customization/sub`.
 

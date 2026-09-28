@@ -124,11 +124,20 @@ def stack_names(app: cdk.App) -> set[str]:
 
 
 def test_absent_without_oidc_context():
-    assert stack_names(build_app(cdk.App(context={"stage": "poc"}))) == {"SiteWiseAssetsStack-poc"}
+    assert stack_names(build_app(cdk.App(context={"stage": "poc"}))) == {
+        "SharedNetworkStack",
+        "SiteWiseAssetsStack-poc",
+        "SimulatorStack-poc",
+    }
     assert "GitHubOidcStack" not in stack_names(build_app(cdk.App(context={"oidc": "false"})))
 
 
 @pytest.mark.parametrize("flag", ["true", True])
 def test_present_with_oidc_context(flag):
     names = stack_names(build_app(cdk.App(context={"stage": "poc-dj", "oidc": flag})))
-    assert names == {"SiteWiseAssetsStack-poc-dj", "GitHubOidcStack"}
+    assert names == {
+        "SharedNetworkStack",
+        "SiteWiseAssetsStack-poc-dj",
+        "SimulatorStack-poc-dj",
+        "GitHubOidcStack",
+    }
