@@ -1,10 +1,12 @@
-# Build context for sim/Dockerfile (also the CDK DockerImageAsset fingerprint).
-# Allowlist: the image needs only the lock files, facility/ and sim/.
+# Build context for sim/Dockerfile and detect/Dockerfile (also the CDK DockerImageAsset fingerprints).
+# Allowlist: the images need only the lock files, facility/, sim/ and detect/. Each CDK image asset
+# also excludes the other image's code, so a change to one never rebuilds the other.
 *
 !pyproject.toml
 !uv.lock
 !facility
 !sim
+!detect
 
 # Never in the context, even if the allowlist grows.
 .venv

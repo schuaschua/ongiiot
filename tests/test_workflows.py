@@ -104,6 +104,9 @@ def test_ci_triggers_and_jobs(ci):
         "docker build --platform linux/amd64 -f sim/Dockerfile -t ongiiot-sim:ci .",
         'docker run --rm --platform linux/amd64 ongiiot-sim:ci python -c'
         ' "import sim.main, boto3, yaml; from facility.model import load; load()"',
+        "docker build --platform linux/amd64 -f detect/Dockerfile -t ongiiot-detect:ci .",
+        "docker run --rm --platform linux/amd64 --entrypoint python ongiiot-detect:ci -c"
+        ' "import detect.handler, boto3, yaml; from facility.model import load; load()"',
     ]
     assert not uses_aws(ci["jobs"]["test"]) and not uses_aws(ci["jobs"]["synth"])
     assert not uses_aws(ci["jobs"]["image"]) and "permissions" not in ci["jobs"]["image"]

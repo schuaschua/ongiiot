@@ -1,4 +1,4 @@
-# PR gate: tests, CDK synth, a simulator image build and a read-only diff against the shared `poc` stage. Never deploys.
+# PR gate: tests, CDK synth, simulator and detection image builds and a read-only diff against the shared `poc` stage. Never deploys.
 # Runbook: docs/ci-cd.md
 name: ci
 
@@ -35,13 +35,15 @@ jobs:
       - run: uv sync --locked
       - run: npx --yes aws-cdk@2.1143.0 synth -c stage=poc --quiet
 
-  # Builds and smoke-runs the simulator image (sim/Dockerfile); no AWS.
+  # Builds and smoke-runs the simulator (sim/Dockerfile) and detection (detect/Dockerfile) images; no AWS.
   image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: docker build --platform linux/amd64 -f sim/Dockerfile -t ongiiot-sim:ci .
       - run: docker run --rm --platform linux/amd64 ongiiot-sim:ci python -c "import sim.main, boto3, yaml; from facility.model import load; load()"
+      - run: docker build --platform linux/amd64 -f detect/Dockerfile -t ongiiot-detect:ci .
+      - run: docker run --rm --platform linux/amd64 --entrypoint python ongiiot-detect:ci -c "import detect.handler, boto3, yaml; from facility.model import load; load()"
 
   diff:
     if: github.event_name == 'pull_request'

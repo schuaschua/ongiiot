@@ -72,7 +72,8 @@ def test_dockerignore_excludes_workspace_noise():
         for line in (ROOT / ".dockerignore").read_text().splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    # Allowlist: exclude everything, then re-include only what the image copies.
+    # Allowlist: exclude everything, then re-include only what the images copy (sim/ and detect/;
+    # each CDK image asset excludes the other, see test_detection_stack.py).
     assert lines[0] == "*"
-    assert {"!pyproject.toml", "!uv.lock", "!facility", "!sim"} == {x for x in lines if x.startswith("!")}
+    assert {"!pyproject.toml", "!uv.lock", "!facility", "!sim", "!detect"} == {x for x in lines if x.startswith("!")}
     assert {".venv", ".git", "cdk.out", "_bmad*", ".work", "tests"} <= set(lines)

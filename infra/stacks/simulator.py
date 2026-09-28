@@ -31,6 +31,9 @@ from facility.model import Facility
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = "sim/Dockerfile"
+# Build-context paths only the other image needs: kept out of this asset's fingerprint, so a
+# detection change never rebuilds or restarts the simulator.
+IMAGE_EXCLUDE = ["detect"]
 SWITCH_CONTEXT = "simulator"
 SWITCH_VALUES = {"on": 1, "off": 0}
 
@@ -78,6 +81,7 @@ class SimulatorStack(cdk.Stack):
             directory=str(REPO_ROOT),
             file=DOCKERFILE,
             platform=ecr_assets.Platform.LINUX_AMD64,
+            exclude=IMAGE_EXCLUDE,
         )
 
         # AD-17: exactly these grants, nothing else.
