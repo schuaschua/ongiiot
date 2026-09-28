@@ -7,14 +7,14 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
 3. Pass 1: the ``dq_*`` detectors (``dq_flatline``, ``dq_stuck``, ``dq_gap``: pipe; ``dq_drift``: facility),
    dispatched by ``kind`` (``pipe``: once per pipe; ``facility``: once per run), then ``dq_score`` with
    the no-sample gap rule (one ``dq_gap`` finding per empty alias).
-4. Pass 2: the ``leak_*`` detectors (``leak_mass_balance``: pipe; ``leak_methane_rise``: facility) on the
-   dq-annotated window (``PipeMeta.dq`` filled); they exclude sensors with ``dq < tunables.dq_min``.
+4. Pass 2: the ``leak_*`` detectors (``leak_mass_balance``: pipe; ``leak_methane_rise``: facility) and
+   ``outlier_peer`` (facility) on the dq-annotated window (``PipeMeta.dq`` filled); they exclude sensors with ``dq < tunables.dq_min``.
    Their findings go to the summary line only (incidents and email come with Stories 3.3 and 3.4). If any
    pass-1 detector failed, its sensors would wrongly score 1.0, so pass 2 is skipped for that run (an ERROR
    line and ``pass2_skipped: true``).
 5. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
 6. Log one JSON summary line, with pass 2's ``findings: [{detector, pipe, confidence, explanation,
-   evidence_aliases}]``, ``suppressed: [{detector, pipe, reason}]`` (a required sensor untrusted) and
+   evidence_aliases}]``, ``suppressed: [{detector, pipe, reason}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
    ``pass2_skipped``.
 
 Environment: ``STAGE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
@@ -40,6 +40,7 @@ from detect.adapters.derived_writer import DerivedWriter
 from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
 from detect.core import dq_score
 from detect.core.detectors import PASS1, PASS2
+from detect.core.detectors._pass2 import dq_min, dq_of, trusted, untrusted_reason
 from detect.core.models import Contract, Detector, FacilityWindow, Finding, PipeMeta, PipeWindow, Tunables, Window
 from detect.core.window import window_bounds
 from facility.model import DEFAULT_PATH, Facility, load
@@ -157,7 +158,7 @@ def run(
     }
     fw = FacilityWindow(pipes=pipes, window=fw.window)
 
-    # Pass 2: leak_* detectors on the dq-annotated window, with the same isolation (AD-5).
+    # Pass 2: leak_* and outlier_peer on the dq-annotated window, with the same isolation (AD-5).
     # A failed pass-1 detector leaves its sensors at 1.0 (trusted), so pass 2 could trust a railed sensor.
     leaks: list[Finding] = []
     suppressed: list[dict[str, str]] = []
@@ -178,11 +179,12 @@ def run(
         try:
             own = _run_detector(det, fw, tunables, check=check_pass2_finding)
             check_pass2_set(det, own)
+            skipped = _suppressed(det, fw, tunables)
         except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
             log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
             continue
         leaks += own
-        suppressed += _suppressed(det, fw, tunables)
+        suppressed += skipped
         ran_ok.append(det.id)
 
     values: dict[str, float | str] = {}
@@ -265,19 +267,19 @@ def check_passes(pass1: Sequence[Detector], pass2: Sequence[Detector], tunables:
 
 
 def _suppressed(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[dict[str, str]]:
-    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (``dq < dq_min``)."""
-    floor = tunables["dq_min"]
+    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (the pass-2 trust
+    rule, ``_pass2.trusted``), plus the features a detector's optional ``skipped(fw, t)`` reports per pipe."""
+    floor = dq_min(tunables)
+    extra = det.skipped(fw, tunables) if hasattr(det, "skipped") else {}
     out = []
     for pid in sorted(fw.pipes):
         p = fw.pipes[pid]
-        reasons = []
-        for m in getattr(det, "requires", ()):
-            if m not in p.aliases:
-                continue
-            d = p.dq.get(m)
-            if d is None or not d >= floor:
-                shown = "none" if d is None else f"{d:.2f}"
-                reasons.append(f"{m} untrusted (dq {shown} < dq_min {floor:g})")
+        reasons = [
+            untrusted_reason(m, dq_of(p, m), floor)
+            for m in getattr(det, "requires", ())
+            if m in p.aliases and not trusted(p, m, floor)
+        ]
+        reasons += extra.get(pid, [])
         if reasons:
             out.append({"detector": det.id, "pipe": pid, "reason": "; ".join(reasons)})
     return out

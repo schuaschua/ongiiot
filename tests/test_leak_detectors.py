@@ -61,10 +61,13 @@ def annotate(fw):
     return FacilityWindow(pipes=pipes, window=fw.window), found
 
 
+LEAKS = tuple(d for d in PASS2 if d.id.startswith("leak_"))  # outlier_peer has its own tests (test_outlier_peer.py)
+
+
 def pass2(afw):
-    """Pass-2 findings on an annotated facility window, through the handler's dispatch and checks."""
+    """Leak findings on an annotated facility window, through the handler's dispatch and checks."""
     out = []
-    for det in PASS2:
+    for det in LEAKS:
         out += handler._run_detector(det, afw, T, check=handler.check_pass2_finding)
     return out
 
@@ -260,14 +263,18 @@ def test_window_end_is_exclusive():
 
 
 def test_detectors_declare_id_version_kind():
-    assert [(d.id, d.version, d.kind) for d in PASS2] == [("leak_mass_balance", "1", "pipe"), ("leak_methane_rise", "1", "facility")]
+    assert [(d.id, d.version, d.kind) for d in PASS2] == [
+        ("leak_mass_balance", "1", "pipe"),
+        ("leak_methane_rise", "1", "facility"),
+        ("outlier_peer", "1", "facility"),
+    ]
     for d in PASS2:
         assert isinstance(d, FacilityDetector if d.kind == "facility" else PipeDetector)
 
 
 def test_detectors_import_types_only_from_models():
     root = Path(__file__).resolve().parent.parent / "detect" / "core" / "detectors"
-    for name in ("leak_mass_balance.py", "leak_methane_rise.py", "_pass2.py", "_peers.py"):
+    for name in ("leak_mass_balance.py", "leak_methane_rise.py", "outlier_peer.py", "_pass2.py", "_peers.py"):
         for node in ast.walk(ast.parse((root / name).read_text())):
             if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("detect."):
                 assert node.module == "detect.core.models" or node.module.startswith("detect.core.detectors"), (name, node.module)

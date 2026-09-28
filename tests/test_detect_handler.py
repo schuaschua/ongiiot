@@ -16,7 +16,7 @@ from facility.model import DEFAULT_PATH, load
 from tests.detect_fakes import FakeSiteWise
 
 STAGE = "poc-dj"
-ALL_IDS = ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap", "leak_mass_balance", "leak_methane_rise"]
+ALL_IDS = ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap", "leak_mass_balance", "leak_methane_rise", "outlier_peer"]
 SCHEDULED = "2026-09-28T12:34:17Z"
 END = datetime(2026, 9, 28, 12, 33, tzinfo=UTC)
 START = datetime(2026, 9, 28, 12, 18, tzinfo=UTC)
@@ -37,10 +37,19 @@ def live_methane(t):
     return 2.0 + (t % 10) * 1e-2
 
 
+def live_temperature(t):
+    """Healthy temperature, the same on every pipe (P-004 and P-016 have their own contract, so a
+    mid-range value would make them peer outliers)."""
+    return 225.0 + (t % 10) * 0.035
+
+
+LIVE_SAME = {"methane_ppm": live_methane, "temperature": live_temperature}
+
+
 def live_store(facility, lo=START.timestamp() - 120, hi=END.timestamp() + 60):
     return {
         facility.alias(p.id, m): [
-            (t, live_methane(t) if m == "methane_ppm" else live_value(p.contracts[m], t), "GOOD") for t in range(int(lo), int(hi))
+            (t, LIVE_SAME[m](t) if m in LIVE_SAME else live_value(p.contracts[m], t), "GOOD") for t in range(int(lo), int(hi))
         ]
         for p in facility.pipes
         for m in p.sensors
@@ -406,6 +415,16 @@ def _without(tunables, detector_id, key):
         ("leak_methane_rise", "min_ppm"),
         ("leak_methane_rise", "full_ppm"),
         ("leak_methane_rise", None),
+        ("outlier_peer", "avg_s"),
+        ("outlier_peer", "min_points"),
+        ("outlier_peer", "min_z"),
+        ("outlier_peer", "full_z"),
+        ("outlier_peer", "floor_pressure_ratio"),
+        ("outlier_peer", "floor_flow_ratio"),
+        ("outlier_peer", "floor_temperature"),
+        ("outlier_peer", "floor_methane_ppm"),
+        ("outlier_peer", "min_den_frac"),
+        ("outlier_peer", None),
     ],
 )
 def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, detector_id, key):
@@ -465,6 +484,17 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("leak_mass_balance", {"min_flow_frac": 1.0}),
         ("leak_mass_balance", {"min_flow_frac": -0.1}),
         ("leak_methane_rise", {"avg_s": 880, "min_points": 30}),  # 20 s left for a 30-point baseline
+        ("outlier_peer", {"min_z": 0}),
+        ("outlier_peer", {"min_z": 8}),  # not below full_z
+        ("outlier_peer", {"full_z": float("inf")}),
+        ("outlier_peer", {"floor_temperature": 0}),  # a zero floor lets a zero MAD explode
+        ("outlier_peer", {"floor_methane_ppm": -1.0}),
+        ("outlier_peer", {"floor_flow_ratio": "0.005"}),
+        ("outlier_peer", {"avg_s": 900}),
+        ("outlier_peer", {"min_points": 61}),
+        ("outlier_peer", {"floor_pressure_ratio": float("nan")}),
+        ("outlier_peer", {"min_den_frac": 1.0}),
+        ("outlier_peer", {"min_den_frac": -0.01}),
     ],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
@@ -495,6 +525,17 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
         "min_flow_frac": 0.01,
     }
     assert dict(facility.tunables["detectors"]["leak_methane_rise"]) == {"avg_s": 60, "min_points": 30, "min_ppm": 30, "full_ppm": 300}
+    assert dict(facility.tunables["detectors"]["outlier_peer"]) == {
+        "avg_s": 60,
+        "min_points": 30,
+        "min_z": 4,
+        "full_z": 8,
+        "floor_pressure_ratio": 0.003,
+        "floor_flow_ratio": 0.005,
+        "floor_temperature": 2.0,
+        "floor_methane_ppm": 1.0,
+        "min_den_frac": 0.01,
+    }
     assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
     assert dict(facility.tunables["detectors"]["dq_stuck"]) == {"min_run_s": 30, "full_s": 60}
     assert dict(facility.tunables["detectors"]["dq_drift"]) == {
@@ -600,8 +641,12 @@ def leak_store(facility, pipe_id="P-007", from_s=120, frac=0.10, ppm=600.0, p_dr
     return store
 
 
-def test_pass2_registers_the_leak_detectors():
-    assert [(d.id, d.kind) for d in handler.PASS2_DETECTORS] == [("leak_mass_balance", "pipe"), ("leak_methane_rise", "facility")]
+def test_pass2_registers_the_leak_and_outlier_detectors():
+    assert [(d.id, d.kind) for d in handler.PASS2_DETECTORS] == [
+        ("leak_mass_balance", "pipe"),
+        ("leak_methane_rise", "facility"),
+        ("outlier_peer", "facility"),
+    ]
 
 
 def test_leak_findings_reach_the_summary(facility):
@@ -610,12 +655,17 @@ def test_leak_findings_reach_the_summary(facility):
     assert [(f["detector"], f["pipe"], f["confidence"]) for f in summary["findings"]] == [
         ("leak_mass_balance", "P-007", 1.0),
         ("leak_methane_rise", "P-007", 1.0),
+        ("outlier_peer", "P-007", 1.0),
     ]
-    mb, mr = summary["findings"]
+    mb, mr, op = summary["findings"]
     a = lambda m: facility.alias("P-007", m)  # noqa: E731
     assert mb["evidence_aliases"] == [a("flow_in"), a("flow_out"), a("pressure_in"), a("pressure_out")]
     assert mr["evidence_aliases"] == [a("methane_ppm")]
     assert "below flow_in" in mb["explanation"] and "above the median" in mr["explanation"]
+    # The Leak outlier row through the handler: flow ratio and methane, no other pipe.
+    assert op["evidence_aliases"] == [a("flow_in"), a("flow_out"), a("methane_ppm")]
+    assert op["explanation"].startswith("Unlike its peers in fg-cs-10to15 over the last 60 s: methane_ppm ")
+    assert "of peers P-008, P-009, P-019, P-020, P-021" in op["explanation"]
     assert summary["suppressed"] == [] and summary["pass2_skipped"] is False
     assert summary["ran_ok"] == ALL_IDS and len(logs) == 1
     assert json.loads(logs[0])["findings"] == summary["findings"]
@@ -633,10 +683,15 @@ def test_untrusted_flow_out_blocks_only_the_mass_balance(facility):
     fake = FakeSiteWise(store, page=20000)
     summary, _ = run(facility, fake)
     assert written(facility, fake)[("P-007", "flow_out")] == (0.0, "dq_flatline")
-    assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [("leak_methane_rise", "P-007")]
+    assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [("leak_methane_rise", "P-007"), ("outlier_peer", "P-007")]
     assert summary["suppressed"] == [
-        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)"}
+        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)"},
+        {"detector": "outlier_peer", "pipe": "P-007", "reason": "flow_ratio skipped: flow_out untrusted (dq 0.00 < dq_min 0.5)"},
     ]
+    # The outlier check still scores the other features, and says which one it skipped.
+    (op,) = [f for f in summary["findings"] if f["detector"] == "outlier_peer"]
+    assert "flow_ratio was not scored because flow_out was excluded as untrusted" in op["explanation"]
+    assert op["evidence_aliases"] == [facility.alias("P-007", "methane_ppm")]
 
 
 class SeesDq:
@@ -673,7 +728,7 @@ def test_pass2_failure_is_isolated(facility):
     fake = FakeSiteWise(leak_store(facility), page=20000)
     summary, logs = run_with(facility, fake, handler.PASS1_DETECTORS, pass2=[Boom(), *handler.PASS2_DETECTORS])
     assert summary["ran_ok"] == ALL_IDS
-    assert [f["detector"] for f in summary["findings"]] == ["leak_mass_balance", "leak_methane_rise"]
+    assert [f["detector"] for f in summary["findings"]] == ["leak_mass_balance", "leak_methane_rise", "outlier_peer"]
     assert json.loads(logs[0])["detector_id"] == "leak_boom" and len(logs) == 2
     assert set(written(facility, fake).values()) == {(1.0, "")}
 
@@ -725,7 +780,7 @@ def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match,
     det = PipeSeesDq(bad) if kind == "pipe" else SeesDq(bad)
     summary, logs = run_with(facility, fake, handler.PASS1_DETECTORS, pass2=[det, *handler.PASS2_DETECTORS])
     assert summary["ran_ok"] == ALL_IDS
-    assert [f["pipe"] for f in summary["findings"]] == ["P-007", "P-007"]
+    assert [f["pipe"] for f in summary["findings"]] == ["P-007", "P-007", "P-007"]
     err = json.loads(logs[0])
     assert err["detector_id"] == "leak_fake" and match in err["error"]
 
@@ -783,7 +838,8 @@ def test_leak_tunables_need_a_numeric_window_len(facility, bad):
 
 def test_simulated_default_leak_on_p007_end_to_end(facility):
     """handler.run over real simulator output (a default leak on P-007 for the last 2 minutes of the window):
-    both findings in the summary with explanation and evidence, nothing elsewhere, nothing suppressed."""
+    both leak findings and the ``outlier_peer`` finding in the summary with explanation and evidence, nothing
+    elsewhere, nothing suppressed (the Leak outlier and Peers only rows end to end)."""
     from facility.control import new_injection
     from sim import physics
 
@@ -804,9 +860,12 @@ def test_simulated_default_leak_on_p007_end_to_end(facility):
     assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [
         ("leak_mass_balance", "P-007"),
         ("leak_methane_rise", "P-007"),
+        ("outlier_peer", "P-007"),
     ]
-    mb, mr = summary["findings"]
-    assert min(mb["confidence"], mr["confidence"]) >= 0.8
+    mb, mr, op = summary["findings"]
+    assert min(mb["confidence"], mr["confidence"], op["confidence"]) >= 0.8
+    assert "P-008, P-009, P-019, P-020, P-021" in op["explanation"] and "methane_ppm" in op["explanation"]
+    assert facility.alias("P-007", "methane_ppm") in op["evidence_aliases"]
     assert mb["evidence_aliases"][:2] == [facility.alias("P-007", "flow_in"), facility.alias("P-007", "flow_out")]
     assert mr["evidence_aliases"] == [facility.alias("P-007", "methane_ppm")]
     assert mb["explanation"].startswith("flow_out is ") and "peer pipes" in mr["explanation"]

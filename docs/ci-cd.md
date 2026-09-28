@@ -259,6 +259,42 @@ Known limits:
 - A methane rise shared by the whole peer group (weather, a flare) moves the median too and is not reported. For the same reason, leaks on up to 3 pipes of one 6-pipe group are each found, but on 4 or more they hide each other.
 - The checks only report: the pipe's `alert_state`, incidents and email come with Stories 3.3 and 3.4.
 
+### Outlier check (pass 2)
+
+`outlier_peer` (`detect/core/detectors/outlier_peer.py`, tunables under `tunables.detectors.outlier_peer`) flags a pipe that behaves unlike the other pipes of its `peer_group` (same service, material and age band, 6 pipes per group today), even when no single threshold is crossed. It runs in pass 2 after the leak checks, on the same dq-annotated window, and uses only trusted sensors.
+
+For every pipe it computes four features over the last `avg_s` (60 s, at least `min_points` 30 GOOD seconds; ratios use seconds where both sensors have a value). Temperature and methane are in their sensors' contract units, and the floors below are in those units; ratios are dimensionless:
+
+| Feature | From | Noise floor |
+| --- | --- | --- |
+| `pressure_ratio` | mean `pressure_out` / mean `pressure_in` | `floor_pressure_ratio` 0.003 |
+| `flow_ratio` | mean `flow_out` / mean `flow_in` | `floor_flow_ratio` 0.005 |
+| `temperature` | mean `temperature` | `floor_temperature` 2.0 (K today) |
+| `methane_ppm` | mean `methane_ppm` | `floor_methane_ppm` 1.0 (ppmv today) |
+
+Each feature is compared with the same feature on the pipe's peers (the other pipes of the group) as a robust z-score: `z = (value - median(peers)) / (1.4826 x MAD(peers) + floor)`. The median and MAD (median absolute deviation) ignore one odd peer, and the floor stops near-identical peers (MAD close to 0) from turning a tiny difference into a huge z. A ratio has no value when the pipe's inlet mean is below `min_den_frac` (1%) of the inlet sensor's contract span (a shut-in or idling pipe, where a tiny inlet would make the ratio explode), when the outlet mean is negative, or when the pipe's own in/out units differ. Ratios are compared across peers whatever their units; temperature and methane only with peers whose contract unit matches. A feature is scored only when at least 4 pipes of the group, the pipe itself included, have a trusted, comparable value for it (AD-14); a pipe without a `peer_group` is not scored. A feature is flagged when `|z|` is above `min_z` (4); the worst flagged feature decides the confidence, `(|z| - min_z) / (full_z - min_z)` (`full_z` 8), capped at 1. A pipe gets at most one finding, and its evidence is the raw aliases behind every flagged feature.
+
+**Reading a finding.** For example, a default leak on P-007 that has been in the window for 2 minutes (simulator physics):
+
+```text
+Unlike its peers in fg-cs-10to15 over the last 60 s: methane_ppm 589.1 vs median 1.96 of peers P-008, P-009, P-019, P-020, P-021, z +576.0; flow_ratio (flow_out/flow_in) 0.9011 vs median 1 of peers P-008, P-009, P-019, P-020, P-021, z -19.4.
+```
+
+The flagged features are listed worst first, each with the sensors behind it (for a ratio), the pipe's value, the median of its peers, the peers compared and z (the sign says above or below the peers). A peer left out of a feature is named after its peer list with the reason (`P-008 left out: methane_ppm untrusted`, `too little data`, `unit mismatch`, `flow_in too low`). If the pipe's own sensors are untrusted, the features that need them are skipped and the explanation ends with, for example, `pressure_ratio was not scored because pressure_out was excluded as untrusted (dq 0.20 < dq_min 0.5)`, naming every untrusted sensor of the feature; the other features are still scored. Every feature skipped on a pipe also appears in the summary's `suppressed` list, even when no finding is made: `{"detector":"outlier_peer","pipe":"P-007","reason":"pressure_ratio skipped: pressure_out untrusted (dq 0.00 < dq_min 0.5)"}`, or `flow_ratio skipped: flow_in too low`, `methane_ppm skipped: only 3 pipes with data`, `flow_ratio skipped: unit mismatch`, `temperature skipped: too little data` (several reasons are joined with `; `).
+
+Findings go to the run summary line with the leak findings (`"findings":[{"detector":"outlier_peer",…}]`), and nowhere else until Stories 3.3 and 3.4. On a leak, the outlier finding names the same pipe as the leak findings, so from Story 3.3 it joins the same incident (one OPEN incident per pipe, AD-6) as another contributing detector rather than raising a second alert.
+
+Calibration on the simulator (`tests/test_outlier_peer.py`): over 6 x 30 consecutive one-minute runs of normal output (seeds 0, 1, 2, 3, 5, different times of day, all 24 pipes) the largest |z| was 2.3 (`pressure_ratio`), 1.5 (`temperature`), 0.5 (`methane_ppm`) and 0.3 (`flow_ratio`), against `min_z` 4. The static steady-state spread between peers dominates `pressure_ratio` and `temperature`; across 300 seeds (steady state plus the daily temperature cycle, without noise) it stays below |z| 2.6 and 1.9 with these floors. A default leak on P-007 scores 0.7 after 5 s in the window and 1.0 from about 10 s, so always by the second run after it enters the window (by then `methane_ppm` is at z 330 or more and `flow_ratio` at |z| 17 or more), and no other pipe of the group is flagged (their largest |z| was 1.9). The leak's `pressure_ratio` shift (about 0.01) is within the normal spread between flare-header peers, so it is rarely one of the flagged features.
+
+On a developer stage, the leak injection in "Leak checks" above also raises `outlier_peer` on P-007 in the same run as the leak findings; no other pipe should show an outlier.
+
+Known limits:
+
+- A peer group with fewer than 4 pipes with trusted data for a feature is not scored on it. With the current 6-pipe groups, 3 or more untrusted pipes stop the check on that feature for that group.
+- A change shared by the whole group moves the median too and is not reported (by design: it is not one pipe behaving differently). Masking starts at 4 of 6 pipes: with 3 changed the same way, each changed pipe's 5 peers are 3 normal and 2 changed, so its median is normal and it is flagged (the group is split evenly, so the 3 unchanged pipes are flagged too); with 4 changed, the changed pipes hide each other and the 2 unchanged ones are flagged instead.
+- A sensor fault the `dq_*` checks have not yet caught (for example the first minutes of a drift) can make its pipe an outlier until the sensor becomes untrusted.
+- Peers differ by design (each pipe has its own steady state), so the floors are set above that spread. A real pipe that has always run a little differently from its peers is not flagged; the check finds changes large compared with normal peer spread, not small standing offsets.
+
 The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
 ## What this does and does not protect

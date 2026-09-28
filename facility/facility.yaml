@@ -197,7 +197,7 @@ tunables:
   detectors:                     # keys under each id are owned by that detector
     leak_mass_balance: {avg_s: 60, min_points: 30, min_frac: 0.02, full_frac: 0.08, pressure_drop_frac: 0.006, min_flow_frac: 0.01}  # mean (flow_in - flow_out) / flow_in
     leak_methane_rise: {avg_s: 60, min_points: 30, min_ppm: 30, full_ppm: 300}  # trailing mean minus peer median, ppmv
-    outlier_peer: {}
+    outlier_peer: {avg_s: 60, min_points: 30, min_z: 4, full_z: 8, floor_pressure_ratio: 0.003, floor_flow_ratio: 0.005, floor_temperature: 2.0, floor_methane_ppm: 1.0, min_den_frac: 0.01}  # robust z vs peer_group; floors in feature units
     dq_flatline: {min_run_s: 30, full_s: 60, rel_tol: 1.0e-6}   # railed within rel_tol x contract span
     dq_stuck: {min_run_s: 30, full_s: 60}                       # exactly repeated, not railed
     dq_drift: {fit_s: 300, min_points: 150, min_rate: 5.0e-4, full_rate: 1.0e-3, min_r2: 0.97}  # residual vs peer median; rate in span/min
