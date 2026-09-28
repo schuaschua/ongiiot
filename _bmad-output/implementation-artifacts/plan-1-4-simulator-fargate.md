@@ -103,6 +103,12 @@ context:
 - Spine: besides the listed AD-17, Stack and Open Questions edits, AD-3's "IAM enforces both (AD-17)" was reworded so it no longer contradicts the AD-17 finding.
 - Stack uses `add_stack_dependency` (`add_dependency` is deprecated in aws-cdk-lib 2.271.0).
 
+- Live verification (2026-09-28, stage `poc-dj`, run 36439876476): all 144 raw aliases fresh (oldest 3 s) across train1 and train2; P-007 `flow_in` and P-020 `methane_ppm` 60 GOOD values per 60 s, no gaps. Simulator then switched off (run 36440869255, desired 0).
+- The first deploys found three issues, all fixed on this branch:
+  - `a75f215`: alias writes need `time-series/*`, and the seed error overflowed CloudFormation's 4 KB response.
+  - orphaned seed log groups after the rollback: deleted by hand, runbook note added.
+  - `2fd6ac5`: on a fresh stage the simulator refused to start, because series do not exist before the first write. It now verifies after the first write (human-approved change to Story 1.2 code).
+
 ## Plan Change Log
 
 - 2026-09-28 (review): the task role grants only `dynamodb:Scan` on `sim_control`, not `GetItem`; the simulator only scans (`sim/control.py`). The frozen Boundaries line still lists `GetItem`; it is left as written for the human to renegotiate.

@@ -494,5 +494,5 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 | ExecuteQuery latency at full load within the 50 s timeout (AD-18)? | Day 1 reader spike; switch to BatchGet fallback if not |
 | Can IAM Identity Center be enabled in the POC account for Grafana? | Day 0 with the account owner; fallback self-hosted Grafana with the same dashboards |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
-| Does 1 Hz per measurement hold on Fargate, and do the alias writes (seed Lambda, simulator task) succeed with grants on pipe asset ARNs, or is the `time-series/*` resource needed (AD-17)? Fargate itself is settled (`SimulatorStack-<stage>`, Story 1.4, 2026-09-28) | First `poc-<initials>` deploy |
+| ~~Does 1 Hz per measurement hold on Fargate, and do alias writes succeed with grants on pipe asset ARNs?~~ **Resolved 2026-09-28 (first `poc-dj` deploy):** 1 Hz holds (60 GOOD values per 60 s, no gaps; all 144 aliases fresh). Asset ARNs alone are not enough: alias-addressed writes are authorised against the time series, so the seed Lambda and simulator task also hold `time-series/*` (AD-17). | Done |
 | Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Before the demo; today anyone with write access can dispatch `poc` from `main` |
