@@ -335,11 +335,42 @@ With the leak injection above, P-007 gets one OPEN incident with `leak_mass_bala
 
 Known limits:
 
-- There is no email yet (Story 3.4) and no reset (Story 4.2); to clear incidents on a developer stage, wait for them to close or delete the items by hand.
+- There is no reset yet (Story 4.2); to clear incidents on a developer stage, wait for them to close or delete the items by hand.
 - If a detector is suppressed on a pipe for a long time (for example a sensor stays untrusted), its entry in that pipe's incident never counts quiet runs, so the incident stays open until the detector can check the pipe again.
 - Each run queries every pipe's items (one `Query` per pipe, with its closed history), which is fine for the POC's 24 pipes and short history.
 
-The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). On DynamoDB it holds only `Query`, `PutItem`, `DeleteItem` and `TransactWriteItems` on `incidents-<stage>` (no `Scan`; the table name reaches the Lambda as `INCIDENTS_TABLE`). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
+### Operator email
+
+Each incident sends exactly one email (AD-7, Story 3.4). At the end of every run, after the incident and alert writes, `detect/adapters/notifier.py` looks at each pipe's OPEN incident. If it has no `notified_at`, it publishes one message to the SNS topic `operators-<stage>` (`DetectionStack-<stage>`, output `OperatorTopicArn`), then sets `notified_at` on the incident. That write only succeeds if the OPEN slot still holds the same `incident_id` and has no `notified_at` yet (the outbox).
+
+- **No duplicates.** A later run, a detector joining the incident, or a reopen within the grace period (the reopened incident keeps its `notified_at`) sends nothing.
+- **Failures.** A failed publish is logged (`"msg":"notify failed"`, `"step":"publish"`), listed in the summary's `notify_failures`, and retried by the next run; it never fails the run. If the publish succeeded but the `notified_at` write lost its condition (someone else set it, or the slot changed), it is listed with `"step":"mark"` and no second email follows. Any other error on that write is listed the same way; that is the one case where the next run can send the email a second time (at least once, never lost).
+- **Summary.** The run's summary line adds `notified` (`[{"pipe","incident_id","message_id"}]`, `message_id` from SNS) and `notify_failures` (`[{"pipe","incident_id","step","error"}]`), and `notify_duration_s`.
+
+The email (Email v1): subject `[POC] Pipe <pipe_id> incident <incident_id>`. The body's first line is always the banner `POC - simulated data - evidence only, not an operational alert or official record`, then the pipe and area, the incident confidence (2 decimals), one line per detector (id, confidence, explanation), the contributing sensors (aliases), and the evidence link.
+
+The link (Deep link v1, built only by `detect/adapters/deeplink.py`) opens the stage's pipe-detail dashboard on the incident, in one line: `<GRAFANA_URL>/d/<DASHBOARD_UID>/pipe-detail?orgId=1&var-pipe_id=P-007&var-area=train1&var-evidence=<alias, URL-encoded>&var-evidence=…&from=<evidence_from − 5 min, epoch ms>&to=<evidence_to + 5 min>`. `GRAFANA_URL` is `SharedGrafanaStack`'s workspace URL (a cross-stack reference, so `DetectionStack-<stage>` depends on `SharedGrafanaStack`), and `DASHBOARD_UID` is `pipe-detail` for `poc` or `pipe-detail-<initials>` otherwise, both set by CDK as env vars. `tests/test_deeplink_contract.py` fails if the link and `dashboards/pipe-detail.json` (uid, `pipe_id`, `area`, `alias_root`, multi-value `evidence`) drift apart.
+
+**Recipients.** Only addresses in the CDK context `operator_emails` (a comma-separated list, consultants only, never client operators) are subscribed; it is empty by default, so no one receives email and the published messages are dropped by SNS. The topic policy denies `sns:Subscribe` to every principal except the CDK CloudFormation execution role (`cdk-hnb659fds-cfn-exec-role-<account>-ap-southeast-1`), so nobody can add a subscription by hand or from the console. To add a recipient:
+
+1. Put the list in `cdk.json`, so every deploy (CI included) keeps it: `"context": {"operator_emails": "alice@example.com,bob@example.com"}`. It applies to every stage. For a one-off local deploy of a developer stage you can pass `-c operator_emails=alice@example.com` instead, but the next CI deploy (which does not pass it) removes that subscription again.
+2. Deploy the stage. SNS sends each new address a confirmation email ("AWS Notification - Subscription Confirmation"); nothing is delivered until the recipient clicks **Confirm subscription**. Check with:
+
+```bash
+aws sns list-subscriptions-by-topic --region ap-southeast-1 \
+  --topic-arn "$(aws cloudformation describe-stacks --region ap-southeast-1 --stack-name DetectionStack-$STAGE \
+    --query "Stacks[0].Outputs[?OutputKey=='OperatorTopicArn'].OutputValue" --output text)" \
+  --query 'Subscriptions[].[Endpoint,SubscriptionArn]' --output text   # PendingConfirmation until clicked
+```
+
+To remove a recipient, delete the address from the list and deploy. To see what was sent:
+
+```bash
+aws logs tail /aws/lambda/detection-$STAGE --region ap-southeast-1 --since 30m --format short | cut -d' ' -f2- \
+  | jq -Rr 'fromjson? | select(.notified) | select((.notified|length) + (.notify_failures|length) > 0) | [.run_id, (.notified|tojson), (.notify_failures|tojson)] | @tsv'
+```
+
+The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). On DynamoDB it holds only `Query`, `PutItem`, `DeleteItem`, `TransactWriteItems` and `UpdateItem` (the `notified_at` marker) on `incidents-<stage>` (no `Scan`; the table name reaches the Lambda as `INCIDENTS_TABLE`). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
 ## What this does and does not protect
 

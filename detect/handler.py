@@ -18,12 +18,16 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    aliases have no samples, ``dq_gap`` findings do not feed incidents and no detector counts as quiet
    (``source_outage: true``). Then ``alert_state`` (INTEGER) and ``alert_summary`` (JSON STRING) at ``window_end``
    for every pipe except those the replay guard left untouched (AD-13).
+5c. Notify (AD-7, ``detect/adapters/notifier.py``): for every OPEN incident without ``notified_at``, publish one
+   Email v1 message to ``OPERATOR_TOPIC_ARN``, then set ``notified_at`` (the outbox). A failed publish is logged
+   and retried by the next run; it never fails the run.
 6. Log one JSON summary line, with pass 2's ``findings: [{detector, pipe, confidence, explanation,
    evidence_aliases}]``, ``suppressed: [{detector, pipe, reason, scope}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
-   ``pass2_skipped``, ``source_outage``, ``incident_conflicts`` (pipes left to the next run), ``incident_ops`` (``opened``/``updated``/``closed``/``reopened``: ``[{pipe, incident_id}]``)
-   and ``alert_state`` (pipe -> detectors in its OPEN incident, pipes with none left out).
+   ``pass2_skipped``, ``source_outage``, ``incident_conflicts`` (pipes left to the next run), ``incident_ops`` (``opened``/``updated``/``closed``/``reopened``: ``[{pipe, incident_id}]``),
+   ``alert_state`` (pipe -> detectors in its OPEN incident, pipes with none left out), ``notified``
+   (``[{pipe, incident_id, message_id}]``) and ``notify_failures`` (``[{pipe, incident_id, step, error}]``).
 
-Environment: ``STAGE`` (required), ``INCIDENTS_TABLE`` (required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
+Environment: ``STAGE``, ``INCIDENTS_TABLE``, ``OPERATOR_TOPIC_ARN``, ``GRAFANA_URL`` and ``DASHBOARD_UID`` (all required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
 ``reader.DEFAULT_STRATEGY``),
 ``FACILITY_PATH`` (default: the bundled ``facility.yaml``). The facility model, pipe metadata and
 SiteWise clients are built once per cold start; each registered detector's tunables are checked then,
@@ -44,6 +48,7 @@ from typing import Any
 
 from detect.adapters.derived_writer import DerivedWriter
 from detect.adapters.incidents import Incidents
+from detect.adapters.notifier import Notifier, NotifyResult
 from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
 from detect.core import dq_score, incident_rules
 from detect.core.detectors import PASS1, PASS2
@@ -149,6 +154,7 @@ class Runtime:
     writer: DerivedWriter
     incidents: Incidents
     alert_targets: Mapping[str, tuple[str, str]]
+    notifier: Notifier | None = None  # always set by runtime(); tests may leave it out
 
 
 def run(
@@ -260,6 +266,11 @@ def run(
     written += rt.writer.write(alerts, end)
     incidents_s = clock() - t2
 
+    # Notify (AD-7): after the incident and alert writes; one email per incident via the notified_at outbox.
+    t3 = clock()
+    notified = rt.notifier.notify(applied.open.values(), run_id=run_id) if rt.notifier is not None else NotifyResult()
+    notify_s = clock() - t3
+
     summary = {
         "stage": f.stage,
         "run_id": run_id,
@@ -270,6 +281,7 @@ def run(
         "read_duration_s": round(read_s, 3),
         "write_duration_s": round(write_s, 3),
         "incidents_duration_s": round(incidents_s, 3),
+        "notify_duration_s": round(notify_s, 3),
         "samples": sum(len(s) for s in fw.window.series.values()),
         "aliases_no_data": sorted(a for a, s in fw.window.series.items() if not s),
         "values_written": written,
@@ -291,6 +303,8 @@ def run(
         "incident_ops": applied.ops,
         "incident_conflicts": applied.conflicts,
         "alert_state": {pid: incident_rules.alert_state(inc) for pid, inc in applied.open.items() if inc is not None},
+        "notified": notified.notified,
+        "notify_failures": notified.failures,
         "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
@@ -409,7 +423,7 @@ def _pipe_window(fw: FacilityWindow, pipe: PipeMeta) -> PipeWindow:
 _RUNTIME: Runtime | None = None
 
 
-def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: Any = None) -> Runtime:
+def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: Any = None, sns: Any = None) -> Runtime:
     """Build the per-cold-start runtime once (facility model, metadata, clients)."""
     global _RUNTIME
     if _RUNTIME is None:
@@ -419,6 +433,9 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
         table = env.get("INCIDENTS_TABLE")
         if not table:
             raise ValueError("INCIDENTS_TABLE is not set")
+        for name in ("OPERATOR_TOPIC_ARN", "GRAFANA_URL", "DASHBOARD_UID"):
+            if not env.get(name):
+                raise ValueError(f"{name} is not set")
         facility = load(env.get("FACILITY_PATH") or DEFAULT_PATH, stage=stage)
         check_passes(PASS1_DETECTORS, PASS2_DETECTORS, facility.tunables)
         incident_rules.check_tunables(facility.tunables)
@@ -427,6 +444,11 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
             from botocore.config import Config
 
             dynamodb = boto3.client("dynamodb", config=Config(retries={"mode": "standard", "max_attempts": 3}))
+        if sns is None:
+            import boto3
+            from botocore.config import Config
+
+            sns = boto3.client("sns", config=Config(retries={"mode": "standard", "max_attempts": 3}))
         if client is None:
             import boto3
             from botocore.config import Config
@@ -438,14 +460,16 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
             write_client = boto3.client("iotsitewise", config=Config(retries={"mode": "standard", "max_attempts": 1}))
         else:
             write_client = client
+        incidents = Incidents(dynamodb, table)
         _RUNTIME = Runtime(
             facility=facility,
             pipes=pipe_metas(facility),
             dq_targets=dq_aliases(facility),
             reader=make_reader(env.get("READER_STRATEGY") or DEFAULT_STRATEGY, client),
             writer=DerivedWriter(write_client, allowed=derived_targets(facility), types=derived_types(facility)),
-            incidents=Incidents(dynamodb, table),
+            incidents=incidents,
             alert_targets=alert_aliases(facility),
+            notifier=Notifier(sns, env["OPERATOR_TOPIC_ARN"], incidents, env["GRAFANA_URL"], env["DASHBOARD_UID"]),
         )
     return _RUNTIME
 

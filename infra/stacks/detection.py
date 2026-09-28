@@ -14,12 +14,20 @@
   destroyed for developer stages, point-in-time recovery on ``poc`` only. The function role gets exactly
   ``INCIDENT_ACTIONS`` (Query, PutItem, DeleteItem, TransactWriteItems) in one statement on that table; its
   name reaches the Lambda as ``INCIDENTS_TABLE``.
-  The simulator role gets nothing on it (AD-17).
+  The simulator role gets nothing on it (AD-17). ``UpdateItem`` is for the ``notified_at`` outbox marker (Story 3.4).
+- ``operators-<stage>`` SNS topic (Story 3.4; AD-7): one email subscription per address in the CDK context
+  ``operator_emails`` (comma-separated, empty by default, so no subscription). The topic policy denies
+  ``sns:Subscribe`` to every principal except the CDK CloudFormation execution role (the deploy path). The
+  function role gets ``sns:Publish`` on this topic only; ``OPERATOR_TOPIC_ARN`` reaches the Lambda.
+- ``GRAFANA_URL`` (``SharedGrafanaStack``'s workspace URL, a cross-stack reference) and ``DASHBOARD_UID``
+  (``pipe-detail`` for ``poc``, ``pipe-detail-<initials>`` otherwise, the same derivation as
+  ``grafana_provision``) reach the Lambda for the Deep link v1 (AD-8).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -31,10 +39,14 @@ from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_scheduler as scheduler
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
 from constructs import Construct
 
 from detect.adapters.reader import DEFAULT_STRATEGY
 from facility.model import Facility
+from infra.stacks.github_oidc import BOOTSTRAP_QUALIFIER
+from infra.stacks.grafana_provision import dashboard_uid
 from infra.stacks.simulator import SWITCH_CONTEXT, desired_count
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -59,7 +71,32 @@ INCIDENT_ACTIONS = [
     "dynamodb:PutItem",
     "dynamodb:DeleteItem",
     "dynamodb:TransactWriteItems",
+    "dynamodb:UpdateItem",
 ]
+
+EMAILS_CONTEXT = "operator_emails"
+_EMAIL = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
+# The CDK bootstrap's CloudFormation execution role, the only principal allowed to subscribe (the deploy path).
+DEPLOY_ROLE_PREFIX = f"cdk-{BOOTSTRAP_QUALIFIER}-cfn-exec-role-"
+
+
+def operator_emails(value: object) -> list[str]:
+    """The ``operator_emails`` context: a comma-separated list (absent or empty: none). Duplicates dropped,
+    order kept; a malformed address fails synth."""
+    if value is None:
+        return []
+    if not isinstance(value, str):
+        raise ValueError(f"{EMAILS_CONTEXT} must be a comma-separated string, got {value!r}")
+    out: list[str] = []
+    for raw in value.split(","):
+        addr = raw.strip()
+        if not addr:
+            continue
+        if not _EMAIL.match(addr):
+            raise ValueError(f"{EMAILS_CONTEXT}: not an email address: {addr!r}")
+        if addr not in out:
+            out.append(addr)
+    return out
 
 
 def schedule_state(value: object) -> str:
@@ -75,6 +112,7 @@ class DetectionStack(cdk.Stack):
         *,
         facility: Facility,
         pipe_asset_arns: Sequence[str],
+        grafana_url: str,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -104,13 +142,36 @@ class DetectionStack(cdk.Stack):
             ),
         )
 
+        # AD-7: the operator topic; subscriptions only from the allowlist, Subscribe denied to all but the deploy role.
+        self.operator_topic = sns.Topic(
+            self, "OperatorTopic", topic_name=f"operators-{stage}", display_name=f"POC pipe incidents ({stage})"
+        )
+        for addr in operator_emails(self.node.try_get_context(EMAILS_CONTEXT)):
+            self.operator_topic.add_subscription(subs.EmailSubscription(addr))
+        self.operator_topic.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenySubscribeExceptDeployRole",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["sns:Subscribe"],
+                resources=[self.operator_topic.topic_arn],
+                conditions={
+                    "ArnNotLike": {
+                        "aws:PrincipalArn": self.format_arn(
+                            service="iam", region="", resource="role", resource_name=f"{DEPLOY_ROLE_PREFIX}{self.account}-{self.region}"
+                        )
+                    }
+                },
+            )
+        )
+
         # AD-17: exactly these grants, nothing else.
         self.role = iam.Role(
             self,
             "FunctionRole",
             role_name=name,
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            description=f"Detection run ({stage}): SiteWise read, derived writes, incidents table, own logs",
+            description=f"Detection run ({stage}): SiteWise read, derived writes, incidents table, operator topic, own logs",
         )
         self.role.add_to_policy(iam.PolicyStatement(actions=SITEWISE_READ_ACTIONS, resources=["*"]))
         self.role.add_to_policy(
@@ -123,6 +184,7 @@ class DetectionStack(cdk.Stack):
         self.role.add_to_policy(
             iam.PolicyStatement(actions=INCIDENT_ACTIONS, resources=[self.incidents_table.table_arn])
         )
+        self.role.add_to_policy(iam.PolicyStatement(actions=["sns:Publish"], resources=[self.operator_topic.topic_arn]))
         self.role.add_to_policy(
             iam.PolicyStatement(
                 actions=["logs:CreateLogStream", "logs:PutLogEvents"],
@@ -153,6 +215,9 @@ class DetectionStack(cdk.Stack):
                 "STAGE": stage,
                 "READER_STRATEGY": DEFAULT_STRATEGY,
                 "INCIDENTS_TABLE": self.incidents_table.table_name,
+                "OPERATOR_TOPIC_ARN": self.operator_topic.topic_arn,
+                "GRAFANA_URL": grafana_url,
+                "DASHBOARD_UID": dashboard_uid("pipe-detail", stage),
             },
         )
 
@@ -194,3 +259,4 @@ class DetectionStack(cdk.Stack):
         cdk.CfnOutput(self, "ScheduleName", value=name)
         cdk.CfnOutput(self, "IncidentsTableName", value=self.incidents_table.table_name)
         cdk.CfnOutput(self, "ScheduleState", value=state)
+        cdk.CfnOutput(self, "OperatorTopicArn", value=self.operator_topic.topic_arn)

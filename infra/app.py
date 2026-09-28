@@ -7,7 +7,9 @@
 ``SharedGrafanaStack`` (fixed name, one Managed Grafana workspace) works the same way through
 ``GrafanaStack-<stage>``, which provisions the stage's folder, data source and dashboards.
 ``DetectionStack-<stage>`` runs the 1-minute detection Lambda; its schedule follows the same
-``simulator`` switch (``off`` disables it).
+``simulator`` switch (``off`` disables it). It also holds the ``operators-<stage>`` topic, whose
+email subscriptions come only from ``-c operator_emails=a@x,b@y`` (empty by default), and takes the
+Grafana URL from ``SharedGrafanaStack`` for the incident deep link.
 
 ``-c oidc=true`` also adds the one-time ``GitHubOidcStack`` (fixed name, no stage
 suffix). Workflows never pass it and deploy only ``*-<stage>``, so they do not target it;
@@ -52,15 +54,16 @@ def build_app(app: cdk.App | None = None) -> cdk.App:
     )
     simulator.add_stack_dependency(sitewise)  # AD-10: the simulator stack depends on the asset stack
     simulator.add_stack_dependency(network)  # `cdk deploy "*-<stage>"` creates or reuses it
+    shared_grafana = SharedGrafanaStack(app, env=env)  # one workspace for every stage
     detection = DetectionStack(
         app,
         f"DetectionStack-{stage}",
         facility=facility,
         pipe_asset_arns=[a.attr_asset_arn for a in sitewise.pipe_assets.values()],
+        grafana_url=shared_grafana.grafana_url,  # Deep link v1 (AD-8); a cross-stack reference
         env=env,
     )
     detection.add_stack_dependency(sitewise)  # derived writes go to this stage's pipe assets
-    shared_grafana = SharedGrafanaStack(app, env=env)  # one workspace for every stage
     GrafanaStack(app, f"GrafanaStack-{stage}", facility=facility, shared=shared_grafana, env=env)
     if str(app.node.try_get_context("oidc")).lower() == "true":
         GitHubOidcStack(app, OIDC_STACK_NAME)

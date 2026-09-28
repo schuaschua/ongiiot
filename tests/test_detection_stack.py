@@ -10,7 +10,7 @@ from aws_cdk.assertions import Template
 
 from infra.app import build_app
 from infra.stacks import detection, simulator
-from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, schedule_state
+from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, operator_emails, schedule_state
 
 
 def synth(stage: str, **context: str):
@@ -55,6 +55,11 @@ def table_id(tpl: dict) -> str:
     return tid
 
 
+def topic_id(tpl: dict) -> str:
+    (tid,) = of_type(tpl, "AWS::SNS::Topic")
+    return tid
+
+
 def test_incidents_table(synthesized):
     stage, _, _, tpl = synthesized
     tid = table_id(tpl)
@@ -77,6 +82,7 @@ def test_stack_name_and_dependency(synthesized):
     assert stack.stack_name == f"DetectionStack-{stage}"
     assert stack.region == "ap-southeast-1"
     assert sitewise in stack.dependencies
+    assert stack.node.scope.node.find_child("SharedGrafanaStack") in stack.dependencies
 
 
 def test_function_single_flight(synthesized):
@@ -90,7 +96,12 @@ def test_function_single_flight(synthesized):
         "STAGE": stage,
         "READER_STRATEGY": "batch_get",
         "INCIDENTS_TABLE": {"Ref": table_id(tpl)},
+        "OPERATOR_TOPIC_ARN": {"Ref": topic_id(tpl)},
+        "GRAFANA_URL": fn["Environment"]["Variables"]["GRAFANA_URL"],
+        "DASHBOARD_UID": "pipe-detail" if stage == "poc" else "pipe-detail-" + stage.removeprefix("poc-"),
     }
+    url = fn["Environment"]["Variables"]["GRAFANA_URL"]  # SharedGrafanaStack's workspace URL
+    assert url["Fn::Join"][1][0] == "https://" and "SharedGrafanaStack" in url["Fn::Join"][1][1]["Fn::ImportValue"]
     (cfg,) = props(tpl, "AWS::Lambda::EventInvokeConfig")
     assert cfg == {
         "FunctionName": {"Ref": function_id(tpl)},
@@ -137,7 +148,7 @@ def test_function_role_is_exactly_ad17(synthesized):
     statements = policy_statements(tpl, role_id)
     assert all(s["Effect"] == "Allow" and "Condition" not in s for s in statements)
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
-    assert len(grants) == len(statements) == 4
+    assert len(grants) == len(statements) == 5
 
     assert grants[tuple(sorted(SITEWISE_READ_ACTIONS))] == ["*"]
     assert set(SITEWISE_READ_ACTIONS) == {
@@ -164,14 +175,17 @@ def test_function_role_is_exactly_ad17(synthesized):
     table = [{"Fn::GetAtt": [table_id(tpl), "Arn"]}]
     assert grants[tuple(sorted(INCIDENT_ACTIONS))] == table
     assert sorted(INCIDENT_ACTIONS) == sorted(
-        ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems"]
+        ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems", "dynamodb:UpdateItem"]
     )
+
+    # AD-7: publish on this stage's operator topic only.
+    assert grants[("sns:Publish",)] == [{"Ref": topic_id(tpl)}]
 
     # AD-4: nothing on sim_control, injection_log or any other service.
     actions = {a for s in statements for a in as_list(s["Action"])}
     dynamo = [s for s in statements if any(a.startswith("dynamodb:") for a in as_list(s["Action"]))]
     assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 1
-    assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs", "dynamodb"}
+    assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs", "dynamodb", "sns"}
 
 
 def test_scheduler_role_only_invokes_the_function(synthesized):
@@ -243,9 +257,10 @@ def test_two_stages_do_not_collide():
         out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
         out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role")}
         out |= {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
+        out |= {p["TopicName"] for p in props(tpl, "AWS::SNS::Topic")}
         return out
 
-    assert len(names(a)) == 4 and not names(a) & names(b)
+    assert len(names(a)) == 5 and not names(a) & names(b)
 
 
 def _image_hashes(monkeypatch, root) -> tuple[str, str]:
@@ -283,3 +298,45 @@ def test_image_hashes_are_independent(tmp_path, monkeypatch):
     (root / "sim" / "main.py").write_text((root / "sim" / "main.py").read_text() + "\n# change\n")
     sim2, det2 = _image_hashes(monkeypatch, root)
     assert sim2 != sim1 and det2 == det1
+
+
+# -- Story 3.4: operator topic (AD-7) ---------------------------------------------------------------
+
+
+def test_operator_topic_without_subscriptions_by_default(synthesized):
+    stage, _, stack, tpl = synthesized
+    (topic,) = props(tpl, "AWS::SNS::Topic")
+    assert topic["TopicName"] == f"operators-{stage}"
+    assert of_type(tpl, "AWS::SNS::Subscription") == {}
+    assert tpl["Outputs"]["OperatorTopicArn"]["Value"] == {"Ref": topic_id(tpl)}
+    (policy,) = props(tpl, "AWS::SNS::TopicPolicy")
+    assert policy["Topics"] == [{"Ref": topic_id(tpl)}]
+    (stmt,) = policy["PolicyDocument"]["Statement"]
+    assert stmt["Effect"] == "Deny" and stmt["Action"] == "sns:Subscribe" and stmt["Principal"] == {"AWS": "*"}
+    assert stmt["Resource"] == {"Ref": topic_id(tpl)}
+    (cond,) = stmt["Condition"]["ArnNotLike"].values()
+    assert list(stmt["Condition"]["ArnNotLike"]) == ["aws:PrincipalArn"]
+    rendered = json.dumps(cond)
+    assert ":role/cdk-hnb659fds-cfn-exec-role-" in rendered
+
+
+def test_operator_topic_two_addresses():
+    _, _, tpl = synth("poc-dj", operator_emails=" a@example.com, b@example.org ,a@example.com,")
+    subs = sorted(props(tpl, "AWS::SNS::Subscription"), key=lambda p: p["Endpoint"])
+    assert [(s["Protocol"], s["Endpoint"]) for s in subs] == [("email", "a@example.com"), ("email", "b@example.org")]
+    assert all(s["TopicArn"] == {"Ref": topic_id(tpl)} for s in subs)
+    assert len(props(tpl, "AWS::SNS::TopicPolicy")) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, []), ("", []), (" , ", []), ("a@x.io", ["a@x.io"]), ("a@x.io,b@y.io,a@x.io", ["a@x.io", "b@y.io"])],
+)
+def test_operator_emails_parsing(value, expected):
+    assert operator_emails(value) == expected
+
+
+@pytest.mark.parametrize("value", ["not-an-email", "a@b", "a b@x.io", ["a@x.io"]])
+def test_bad_operator_emails_fail_synth(value):
+    with pytest.raises(ValueError, match="operator_emails"):
+        operator_emails(value)
