@@ -3,12 +3,12 @@ title: 'Story 3.2: Flag a pipe that behaves differently from its peers'
 type: 'feature'
 ticket: 'OG-15'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: '75dc22c139ddfb2e80e4c2eaf9bec4a358f12fba'
 context:
@@ -88,7 +88,7 @@ context:
   - Ratios are a ratio of means over the seconds where both sensors have a GOOD value (`sum(out) / sum(in)`), not a mean of per-second ratios, so one near-zero inlet reading cannot blow it up; a non-positive inlet sum or mismatched in/out units gives no value.
   - Peers are the *other* pipes of the group (leave-one-out median and MAD), so the pipe under test never dilutes its own reference; a feature is scored only when at least 4 pipes (the pipe included) have a value and share the sensor's unit.
   - Confidence and evidence exactly as frozen; findings list flagged features worst first, name the peers of the worst feature and any left-out peer with its reason (untrusted, too little data, different unit); evidence aliases are in the pipe's sensor order.
-  - An untrusted own sensor skips only the features that need it; the explanation says so when there is a finding. `requires = ()` (no single sensor silences the check); a new optional `feature_sensors` attribute lets `handler._suppressed` report `"<feature> skipped: <sensor> untrusted (...)"` in the summary's `suppressed` even without a finding.
+  - An untrusted own sensor skips only the features that need it; the explanation says so when there is a finding. `requires = ()` (no single sensor silences the check); a detector method (see review fixes) lets `handler._suppressed` report `"<feature> skipped: <sensor> untrusted (...)"` in the summary's `suppressed` even without a finding.
   - No `dataclasses` import: the detectors' import rule (`test_dq_detectors`) allows only `math`, `collections`, `typing`.
 - **Calibrated tunables:** `outlier_peer: {avg_s: 60, min_points: 30, min_z: 4, full_z: 8, floor_pressure_ratio: 0.003, floor_flow_ratio: 0.005, floor_temperature: 2.0, floor_methane_ppm: 1.0}`.
   - Healthy physics, 6 x 30 consecutive one-minute runs (seeds 0, 1, 2, 3, 5; different times of day), all 24 pipes, max |z| per feature: `pressure_ratio` 2.31, `temperature` 1.45, `methane_ppm` 0.46, `flow_ratio` 0.30 (min_z 4). Static steady-state spread over 300 seeds (no noise): `pressure_ratio` max 2.56, `temperature` (with the daily cycle) max 1.86.
@@ -96,11 +96,35 @@ context:
   - Default leak (10% of mean flow) on P-007 (and on P-003, P-010, P-016, P-020), second run after entering the window (entered 1, 17, 30, 45, 60 s): `methane_ppm` z >= 337, `flow_ratio` |z| >= 17.7, so confidence 1.0; first-run confidence by seconds of leak: 1 s -> none, 5 s -> 0.70, >= 10 s -> 1.0. Peers' max |z| during the leak 1.91 (`pressure_ratio`). The leak's pressure-ratio shift (~0.01) is inside normal flare-header peer spread (up to 0.0087), so pressure_ratio alone cannot separate a leak; methane and flow ratio carry it (plan allows "pressure ratio or methane").
 - **Tests:** `tests/test_outlier_peer.py` (40 tests: every matrix row but Live, synthetic and physics, confidence ramp, peers left out and named, small group / 4-pipe minimum, shared shift, untrusted own and peer sensors, non-finite values, zero flow, unit mismatch, 6 healthy 30-run sequences, two-run timing, all peer groups, untrusted `pressure_out` via simulator `dq_flatline`). Handler tests: summary carries the outlier finding (synthetic and physics leak), feature-skip `suppressed`, tunables at cold start (missing and invalid keys, bundled values).
 - **Existing tests touched:** the handler tests' synthetic `live_store` now gives every pipe the same temperature (P-004 and P-016 have their own temperature contract, so a mid-range value made them peer outliers); `tests/test_leak_detectors.py` runs only the `leak_*` detectors in its `pass2` helper, and its registry and import tests list `outlier_peer`.
+- **Review fixes (2026-09-29):**
+  - Ratios: new tunable `min_den_frac: 0.01` (of the inlet contract span, above its min): an idling or shut-in inlet gives no ratio (`<den> too low`); a negative outlet mean gives none (`<num> negative`). Healthy runs keep every feature scored (lowest baselines: flare flow 1.5 kg/s vs 0.5, flare pressure_in 1.5e5 Pa vs 1e5). Calibrated values unchanged.
+  - Units: ratios are not unit-compared across peers (dimensionless once the pipe's own in/out units match, else `unit mismatch`); temperature/methane need an equal, present contract unit. Left-out peers say `unit mismatch`.
+  - Explanation: per flagged feature its sensors (`flow_ratio (flow_out/flow_in)`), value, median, peers compared and left out; every untrusted sensor of a skipped feature is named.
+  - Flag only when `|z| > min_z` (no zero-confidence finding). `check_tunables` requires finite values.
+  - `handler._suppressed` uses `_pass2.trusted` / `dq_of` / `dq_min` and a new `_pass2.untrusted_reason`, and adds the detector's optional `skipped(fw, t)` (replaces `feature_sensors`): untrusted, too little data, unit mismatch, too low / negative, `only N pipes with data`. It now runs inside the detector's isolation.
+  - Pipes with an empty or missing `peer_group` are skipped. Docs: masking starts at 4 of 6 (tests for 3 and 4 of 6), contract units, and the incident note for Story 3.3.
 - Calibration scripts in `.work/calib_outlier*.py` (gitignored). `cdk synth -c stage=poc-dj --quiet` exit 0 (run without AWS credentials).
 
 ## Plan Change Log
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 0, medium 5, low 14, false 0. Outcome: 9 patch groups, 1 deferral (to 3.3), no loopback.
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| BH-2, ECH-1, ECH-2 | Tiny inlet mean or negative numerator makes the ratios explode | medium | patch | `min_den_frac` guard; negative numerator gives None. |
+| BH-3, ECH-6, VG-1, VG-o1 | Unit handling wrong for ratios and single features; peer-unit branch untested | medium | patch | Ratios dimensionless; single features compare units; missing unit is not comparable; tests. |
+| BH-4, ECH-9 | `_suppressed` re-implements the trust test | medium | patch | Reuse the `_pass2` helpers. |
+| BH-5, BH-6, ECH-3, ECH-7, ECH-claim | Explanation incomplete (first untrusted only, worst feature only, no sensor names) | medium | patch | All named per feature. |
+| BH-1 | Docs give the wrong masking count (3 vs 4 of 6) | medium | patch | Docs fixed; 3-of-6 and 4-of-6 tests. |
+| BH-7, VG-o3 | Zero-confidence finding at `min_z` | low | patch | Strict `>`. |
+| BH-8 | Non-finite tunables accepted | low | patch | `isfinite` checks. |
+| ECH-4, ECH-5 | Features skipped silently | low | patch | Listed in `suppressed`. |
+| ECH-8 | Empty `peer_group` pooled | low | patch | Skipped. |
+| BH-9 | Docs claim units the code doesn't use | low | patch (doc) | "Contract units". |
+| BH-10 | Outlier and leak findings not cross-referenced | low | defer | Story 3.3 groups all findings on a pipe into one incident (AD-6). |
+| IA-R2, IA-R3, IA-R4 | No engineer-facing surface; no multi-run persistence; not all features dimensionless | low | reject | 3.3/3.4 own the surface; the trailing mean is the plan's persistence reading; the plan allowed peer-comparable features. |
 
 ## Verification
 

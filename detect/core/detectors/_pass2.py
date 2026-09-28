@@ -64,3 +64,9 @@ def untrusted_note(m: str, d: float | None, floor: float) -> str:
     """``"pressure_out was excluded as untrusted (dq 0.20 < dq_min 0.5)"``."""
     shown = "none" if d is None else f"{d:.2f}"
     return f"{m} was excluded as untrusted (dq {shown} < dq_min {floor:g})"
+
+
+def untrusted_reason(m: str, d: float | None, floor: float) -> str:
+    """``"pressure_out untrusted (dq 0.20 < dq_min 0.5)"`` (the run summary's ``suppressed`` reasons)."""
+    shown = "none" if d is None else f"{d:.2f}"
+    return f"{m} untrusted (dq {shown} < dq_min {floor:g})"

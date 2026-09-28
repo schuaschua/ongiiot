@@ -423,6 +423,7 @@ def _without(tunables, detector_id, key):
         ("outlier_peer", "floor_flow_ratio"),
         ("outlier_peer", "floor_temperature"),
         ("outlier_peer", "floor_methane_ppm"),
+        ("outlier_peer", "min_den_frac"),
         ("outlier_peer", None),
     ],
 )
@@ -491,6 +492,9 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("outlier_peer", {"floor_flow_ratio": "0.005"}),
         ("outlier_peer", {"avg_s": 900}),
         ("outlier_peer", {"min_points": 61}),
+        ("outlier_peer", {"floor_pressure_ratio": float("nan")}),
+        ("outlier_peer", {"min_den_frac": 1.0}),
+        ("outlier_peer", {"min_den_frac": -0.01}),
     ],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
@@ -530,6 +534,7 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
         "floor_flow_ratio": 0.005,
         "floor_temperature": 2.0,
         "floor_methane_ppm": 1.0,
+        "min_den_frac": 0.01,
     }
     assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
     assert dict(facility.tunables["detectors"]["dq_stuck"]) == {"min_run_s": 30, "full_s": 60}
@@ -659,7 +664,8 @@ def test_leak_findings_reach_the_summary(facility):
     assert "below flow_in" in mb["explanation"] and "above the median" in mr["explanation"]
     # The Leak outlier row through the handler: flow ratio and methane, no other pipe.
     assert op["evidence_aliases"] == [a("flow_in"), a("flow_out"), a("methane_ppm")]
-    assert op["explanation"].startswith("Unlike its 5 peers in fg-cs-10to15 (P-008, P-009, P-019, P-020, P-021)")
+    assert op["explanation"].startswith("Unlike its peers in fg-cs-10to15 over the last 60 s: methane_ppm ")
+    assert "of peers P-008, P-009, P-019, P-020, P-021" in op["explanation"]
     assert summary["suppressed"] == [] and summary["pass2_skipped"] is False
     assert summary["ran_ok"] == ALL_IDS and len(logs) == 1
     assert json.loads(logs[0])["findings"] == summary["findings"]

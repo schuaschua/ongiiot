@@ -40,6 +40,7 @@ from detect.adapters.derived_writer import DerivedWriter
 from detect.adapters.reader import DEFAULT_STRATEGY, Reader, make_reader
 from detect.core import dq_score
 from detect.core.detectors import PASS1, PASS2
+from detect.core.detectors._pass2 import dq_min, dq_of, trusted, untrusted_reason
 from detect.core.models import Contract, Detector, FacilityWindow, Finding, PipeMeta, PipeWindow, Tunables, Window
 from detect.core.window import window_bounds
 from facility.model import DEFAULT_PATH, Facility, load
@@ -178,11 +179,12 @@ def run(
         try:
             own = _run_detector(det, fw, tunables, check=check_pass2_finding)
             check_pass2_set(det, own)
+            skipped = _suppressed(det, fw, tunables)
         except Exception as exc:  # noqa: BLE001 - AD-5: one detector's failure never stops the run
             log(json.dumps({"stage": f.stage, "run_id": run_id, "detector_id": det.id, "error": repr(exc)}))
             continue
         leaks += own
-        suppressed += _suppressed(det, fw, tunables)
+        suppressed += skipped
         ran_ok.append(det.id)
 
     values: dict[str, float | str] = {}
@@ -265,27 +267,19 @@ def check_passes(pass1: Sequence[Detector], pass2: Sequence[Detector], tunables:
 
 
 def _suppressed(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[dict[str, str]]:
-    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (``dq < dq_min``),
-    or where a feature of ``det.feature_sensors`` (``feature -> sensors``) is skipped for an untrusted sensor."""
-    floor = tunables["dq_min"]
-
-    def untrusted(p: PipeMeta, m: str) -> str | None:
-        d = p.dq.get(m)
-        if d is None or not d >= floor:
-            shown = "none" if d is None else f"{d:.2f}"
-            return f"{m} untrusted (dq {shown} < dq_min {floor:g})"
-        return None
-
+    """``{detector, pipe, reason}`` for each pipe where one of ``det.requires`` is untrusted (the pass-2 trust
+    rule, ``_pass2.trusted``), plus the features a detector's optional ``skipped(fw, t)`` reports per pipe."""
+    floor = dq_min(tunables)
+    extra = det.skipped(fw, tunables) if hasattr(det, "skipped") else {}
     out = []
     for pid in sorted(fw.pipes):
         p = fw.pipes[pid]
-        reasons = [r for m in getattr(det, "requires", ()) if m in p.aliases and (r := untrusted(p, m))]
-        for feature, sensors in getattr(det, "feature_sensors", {}).items():
-            if not all(m in p.aliases for m in sensors):
-                continue
-            bad = [r for m in sensors if (r := untrusted(p, m))]
-            if bad:
-                reasons.append(f"{feature} skipped: {', '.join(bad)}")
+        reasons = [
+            untrusted_reason(m, dq_of(p, m), floor)
+            for m in getattr(det, "requires", ())
+            if m in p.aliases and not trusted(p, m, floor)
+        ]
+        reasons += extra.get(pid, [])
         if reasons:
             out.append({"detector": det.id, "pipe": pid, "reason": "; ".join(reasons)})
     return out
