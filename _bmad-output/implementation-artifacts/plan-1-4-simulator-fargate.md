@@ -36,7 +36,7 @@ context:
   - nothing else. The execution role is separate: ECR pull and logs only.
 - Decision (2026-09-28, AWS service reference): IAM cannot scope `BatchPutAssetPropertyValue` by alias. No action supports the `iotsitewise:propertyAlias` condition key. The code guard in `sim/writer.py` stays the raw/derived boundary, and the spine records this against AD-17.
 - The image is `python:3.14-slim` with deps from `uv.lock`: runtime only, no `dev` or `infra` groups. It is built for `linux/amd64`, and the task runs on X86_64. It runs `python -m sim.main` with `STAGE`, `SIM_CONTROL_TABLE` and `INJECTION_LOG_TABLE` set by CDK.
-- Networking: a VPC with public subnets only and no NAT gateway; the task gets a public IP; the security group allows no ingress.
+- Networking: one shared VPC for all stages (decision, human, 2026-09-28), in `SharedNetworkStack` (fixed name, no stage suffix): 2 AZs, public subnets only, no NAT gateway. Each `SimulatorStack-<stage>` depends on it, so any stage deploy creates or reuses it; deleting a stage never touches it. The task gets a public IP; each stage's security group allows no ingress.
 - Decision (human, 2026-09-28): the simulator runs only while testing. CDK context `simulator` (`on` default, or `off`) sets the service's desired count to 1 or 0; nothing else changes, so tables and history survive. `deploy.yml` gets a required `simulator` choice input (`on`/`off`, default `on`), passed as `-c "simulator=$SIMULATOR"` through `env:`. Any other value fails synth.
 - One task at most (desired count 1 when on); a circuit breaker with rollback. Logs go to a stage-named log group with 1-week retention.
 
@@ -107,6 +107,8 @@ context:
 
 - 2026-09-28 (review): the task role grants only `dynamodb:Scan` on `sim_control`, not `GetItem`; the simulator only scans (`sim/control.py`). The frozen Boundaries line still lists `GetItem`; it is left as written for the human to renegotiate.
 - 2026-09-28 (review): `ci.yml` gains an `image` job (no AWS) that builds `sim/Dockerfile` and smoke-imports `sim.main` and the facility model.
+
+- **Post-review → shared VPC, decided by the human.** Trigger: BH-9 (one VPC per stage against the region quota of 5). Amended: a single `SharedNetworkStack` VPC used by every `SimulatorStack-<stage>`; the runbook's VPC-quota note is replaced by a note on the shared network. Known-bad state avoided: the 5th stage deploy failing on the VPC quota. KEEP: everything else in `63fef24`.
 
 ## Review Triage Log
 

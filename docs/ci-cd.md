@@ -95,7 +95,7 @@ aws iotsitewise get-asset-property-value --region ap-southeast-1 \
 Allow at least 30 minutes of warm-up before a demo or a detection test (AD-15: two detection windows of history).
 
 - **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
-- **VPC quota:** each stage creates its own VPC. The region's default quota is 5 VPCs, and the default VPC uses 1, so request a quota increase before deploying a 5th `SimulatorStack`.
+- **Shared network:** all stages run in one VPC, `SharedNetworkStack` (fixed name, no stage suffix). The first stage deploy creates it, because every `SimulatorStack-<stage>` depends on it; later deploys reuse it. Deleting a stage leaves it in place.
 - **`poc` tables are retained:** `sim-control-poc` and `injection-log-poc` have fixed names and `RETAIN`. After deleting `SimulatorStack-poc`, delete those tables (or import them into the stack) before redeploying, or the deploy fails because the names already exist.
 
 ## What this does and does not protect

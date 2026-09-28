@@ -2,8 +2,8 @@
 
 - ``sim-control-<stage>`` and ``injection-log-<stage>`` tables (key ``pk`` S, on demand),
   retained for ``poc``, destroyed for developer stages.
-- A VPC with public subnets only and no NAT gateway; the task gets a public IP and a
-  security group with no ingress.
+- Runs in the shared VPC (``SharedNetworkStack``: public subnets only, no NAT); the task
+  gets a public IP and a per-stage security group with no ingress.
 - One Fargate service running ``sim/Dockerfile`` (built from ``uv.lock``, linux/amd64).
   CDK context ``simulator`` (``on`` default, or ``off``) sets the desired count to 1 or 0;
   nothing else changes, so tables and history survive a stop.
@@ -51,6 +51,7 @@ class SimulatorStack(cdk.Stack):
         *,
         facility: Facility,
         pipe_asset_arns: Sequence[str],
+        vpc: ec2.IVpc,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -61,15 +62,7 @@ class SimulatorStack(cdk.Stack):
         self.control_table = self._table("SimControlTable", f"sim-control-{stage}", removal)
         self.log_table = self._table("InjectionLogTable", f"injection-log-{stage}", removal)
 
-        self.vpc = ec2.Vpc(
-            self,
-            "Vpc",
-            max_azs=2,
-            nat_gateways=0,
-            subnet_configuration=[
-                ec2.SubnetConfiguration(name="public", subnet_type=ec2.SubnetType.PUBLIC, cidr_mask=24)
-            ],
-        )
+        self.vpc = vpc
         self.security_group = ec2.SecurityGroup(
             self,
             "TaskSecurityGroup",

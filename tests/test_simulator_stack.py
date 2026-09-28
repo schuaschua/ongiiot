@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
+
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
 
+from facility.model import DEFAULT_PATH, load
 from infra.app import build_app
-from infra.stacks.simulator import desired_count
+from infra.stacks.simulator import SimulatorStack, desired_count
 
 ASSUME_TASKS = {
     "Statement": [
@@ -145,18 +148,41 @@ def test_only_two_roles(synthesized):
     assert len(of_type(tpl, "AWS::IAM::Role")) == 2
 
 
-def test_network_public_no_nat_no_ingress(synthesized):
-    _, _, _, tpl = synthesized
-    assert not of_type(tpl, "AWS::EC2::NatGateway")
-    assert not of_type(tpl, "AWS::EC2::EIP")
-    subnets = props(tpl, "AWS::EC2::Subnet")
-    assert len(subnets) == 2 and all(s["MapPublicIpOnLaunch"] is True for s in subnets)
+def test_uses_shared_vpc_no_ingress(synthesized):
+    _, _, stack, tpl = synthesized
+    network = stack.node.scope.node.find_child("SharedNetworkStack")
+    assert stack.vpc is network.vpc
+    assert network in stack.dependencies
+    for type_ in ("AWS::EC2::VPC", "AWS::EC2::Subnet", "AWS::EC2::NatGateway", "AWS::EC2::InternetGateway"):
+        assert not of_type(tpl, type_), type_
     (sg,) = props(tpl, "AWS::EC2::SecurityGroup")
     assert "SecurityGroupIngress" not in sg
     assert not of_type(tpl, "AWS::EC2::SecurityGroupIngress")
+    assert "Fn::ImportValue" in sg["VpcId"] and sg["VpcId"]["Fn::ImportValue"].startswith("SharedNetworkStack:")
     (svc,) = props(tpl, "AWS::ECS::Service")
     net = svc["NetworkConfiguration"]["AwsvpcConfiguration"]
     assert net["AssignPublicIp"] == "ENABLED"
+    assert len(net["Subnets"]) == 2
+    assert all(s["Fn::ImportValue"].startswith("SharedNetworkStack:") for s in net["Subnets"])
+
+
+def test_two_stages_share_one_vpc():
+    app = build_app(cdk.App(context={"stage": "poc"}))
+    network = app.node.find_child("SharedNetworkStack")
+    sitewise = app.node.find_child("SiteWiseAssetsStack-poc")
+    # A second stage in the same app gets the same VPC, not a new one.
+    other = SimulatorStack(
+        app,
+        "SimulatorStack-poc-dj",
+        facility=load(DEFAULT_PATH, stage="poc-dj"),
+        pipe_asset_arns=[a.attr_asset_arn for a in sitewise.pipe_assets.values()],
+        vpc=network.vpc,
+        env=cdk.Environment(account=os.environ.get("CDK_DEFAULT_ACCOUNT"), region="ap-southeast-1"),
+    )
+    first = app.node.find_child("SimulatorStack-poc")
+    assert first.vpc is other.vpc is network.vpc
+    stacks = [c for c in app.node.children if isinstance(c, cdk.Stack)]
+    assert [s for s in stacks if of_type(Template.from_stack(s).to_json(), "AWS::EC2::VPC")] == [network]
 
 
 def test_service_one_task_with_rollback(synthesized):
