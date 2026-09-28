@@ -24,7 +24,7 @@ aliases; the Deep link v1 (``deeplink.build_link``).
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -35,10 +35,17 @@ from detect.core import incident_rules as rules
 from detect.core.incident_rules import Incident
 
 BANNER = "POC - simulated data - evidence only, not an operational alert or official record"
+SUBJECT_MAX = 100  # SNS email subject: ASCII, no line breaks, at most 100 characters
+DEADLINE_MS = 10_000  # stop publishing when the Lambda has less than this left
+
+
+def _one_line(text: str) -> str:
+    return " ".join(str(text).split())
 
 
 def subject(inc: Incident) -> str:
-    return f"[POC] Pipe {inc.pipe_id} incident {inc.incident_id}"
+    raw = _one_line(f"[POC] Pipe {inc.pipe_id} incident {inc.incident_id}")
+    return raw.encode("ascii", "replace").decode("ascii")[:SUBJECT_MAX]
 
 
 def body(inc: Incident, link: str) -> str:
@@ -47,7 +54,7 @@ def body(inc: Incident, link: str) -> str:
         f"Pipe: {inc.pipe_id} (area {inc.area})",
         f"Incident confidence: {inc.confidence:.2f}",
         "Detectors:",
-        *(f"- {det_id}: confidence {d.confidence:.2f} - {d.explanation}" for det_id, d in sorted(inc.detectors.items())),
+        *(f"- {det_id}: confidence {d.confidence:.2f} - {_one_line(d.explanation)}" for det_id, d in sorted(inc.detectors.items())),
         "Contributing sensors: " + ", ".join(inc.evidence_aliases),
         f"Evidence in Grafana: {link}",
     ]
@@ -85,23 +92,46 @@ class Notifier:
         self._incidents = incidents
         self._grafana_url = grafana_url
         self._dashboard_uid = dashboard_uid
+        now = clock()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError(f"notifier clock must return a tz-aware datetime, got {now!r}")
         self._clock = clock
         self._log = log
 
     def link(self, inc: Incident) -> str:
         return build_link(inc, self._grafana_url, self._dashboard_uid)
 
-    def notify(self, open_incidents: Iterable[Incident | None], run_id: str = "") -> NotifyResult:
+    def notify(
+        self,
+        open_incidents: Iterable[Incident | None],
+        run_id: str = "",
+        skip: Collection[str] = (),
+        remaining_ms: Callable[[], int] | None = None,
+    ) -> NotifyResult:
+        """``skip``: pipes not to notify this run (replayed or conflicted: their state is not this run's).
+        ``remaining_ms``: the Lambda's remaining time; below ``DEADLINE_MS`` the rest is left to the next run."""
         result = NotifyResult()
-        pending = [i for i in open_incidents if i is not None and i.status == rules.OPEN and i.notified_at is None]
+        pending = [
+            i
+            for i in open_incidents
+            if i is not None and i.status == rules.OPEN and i.notified_at is None and i.pipe_id not in skip
+        ]
         for inc in sorted(pending, key=lambda i: i.pipe_id):
             ref = {"pipe": inc.pipe_id, "incident_id": inc.incident_id}
+            if remaining_ms is not None and remaining_ms() < DEADLINE_MS:
+                self._fail(result, ref, "deadline", f"less than {DEADLINE_MS} ms left; left to the next run", run_id)
+                continue
             try:
-                resp = self._sns.publish(TopicArn=self._topic, Subject=subject(inc), Message=body(inc, self.link(inc)))
+                subj, msg = subject(inc), body(inc, self.link(inc))
+            except ValueError as exc:  # a malformed incident: recorded, never published
+                self._fail(result, ref, "render", repr(exc), run_id)
+                continue
+            try:
+                resp = self._sns.publish(TopicArn=self._topic, Subject=subj, Message=msg)
             except Exception as exc:  # noqa: BLE001 - AD-7: logged, retried by the next run
                 self._fail(result, ref, "publish", _error(exc), run_id)
                 continue
-            message_id = str(resp.get("MessageId", ""))
+            message_id = str(resp.get("MessageId", "")) if isinstance(resp, dict) else ""
             try:
                 marked = self._incidents.mark_notified(inc.pipe_id, inc.incident_id, self._clock())
             except Exception as exc:  # noqa: BLE001 - the email went out; record it, do not fail the run

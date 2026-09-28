@@ -199,3 +199,84 @@ def test_handler_without_notifier_reports_empty_lists(facility):
     rt = runtime(facility, FakeSiteWise(leak_store(facility), page=20000), db=FakeDynamoDB("incidents-poc-dj"))
     summary = handler.run(rt, handler.parse_scheduled_time({"scheduled_time": SCHEDULED}), log=lambda _: None)
     assert summary["notified"] == [] and summary["notify_failures"] == []
+
+
+# -- review fixes: render, limits, skip, deadline ----------------------------------------------------
+
+
+def test_render_error_is_recorded_not_published():
+    rig = NRig()
+    applied = rig.run(0, three(0))
+    bad = replace(applied.open["P-007"], evidence_from=datetime(2026, 9, 29))  # naive: build_link refuses it
+    res = rig.notifier.notify([bad])
+    (fail,) = res.failures
+    assert fail["step"] == "render" and rig.sns.attempts == 0 and "notified_at" not in rig.items()["OPEN"]
+
+
+def test_subject_is_ascii_one_line_and_at_most_100_chars():
+    rig = NRig()
+    inc = rig.run(0, three(0)).open["P-007"]
+    s = subject(replace(inc, incident_id="é\n" + "X" * 200))
+    assert len(s) <= 100 and s.isascii() and "\n" not in s and s.startswith("[POC] Pipe P-007 incident ?")
+
+
+def test_explanation_newlines_become_spaces():
+    rig = NRig()
+    inc = rig.run(0, three(0)).open["P-007"]
+    det = replace(inc.detectors["outlier_peer"], explanation="line one\nline two\r\nthree")
+    text = body(replace(inc, detectors={**inc.detectors, "outlier_peer": det}), "L")
+    assert "- outlier_peer: confidence 0.60 - line one line two three" in text.split("\n")
+
+
+def test_non_dict_publish_response_is_tolerated():
+    class OddSNS(FakeSNS):
+        def publish(self, **kw):
+            super().publish(**kw)
+            return None
+
+    rig = NRig(OddSNS())
+    _, res = rig.step(0, three(0))
+    assert res.notified[0]["message_id"] == "" and rig.items()["OPEN"]["notified_at"]
+
+
+def test_clock_must_be_tz_aware():
+    rig = Rig()
+    with pytest.raises(ValueError, match="tz-aware"):
+        Notifier(FakeSNS(), TOPIC, rig.inc, URL, "u", clock=lambda: datetime(2026, 9, 29))
+
+
+def test_skipped_pipes_are_not_notified():
+    rig = NRig()
+    applied = rig.run(0, three(0))
+    res = rig.notifier.notify(applied.open.values(), skip={"P-007"})
+    assert res.notified == res.failures == [] and rig.sns.published == []
+
+
+def test_deadline_stops_publishing():
+    rig = NRig()
+    applied = rig.run(0, [*three(0), F("leak_methane_rise", 0.7, ["/lng1/train1/P-008/methane_ppm"], 0, pipe="P-008")])
+    left = iter([20_000, 9_000])
+    res = rig.notifier.notify(applied.open.values(), remaining_ms=lambda: next(left))
+    assert [n["pipe"] for n in res.notified] == ["P-007"]
+    assert [(f["pipe"], f["step"]) for f in res.failures] == [("P-008", "deadline")]
+    assert len(rig.sns.published) == 1 and "notified_at" not in rig.items("P-008")["OPEN"]
+
+
+def test_handler_publish_failure_run_succeeds(facility):
+    db, sns = FakeDynamoDB("incidents-poc-dj"), FakeSNS(fail="InternalErrorException")
+    rt = runtime(facility, FakeSiteWise(leak_store(facility), page=20000), db=db)
+    rt.notifier = Notifier(sns, TOPIC, rt.incidents, URL, "pipe-detail-dj", clock=lambda: WHEN, log=lambda _: None)
+    summary = handler.run(rt, handler.parse_scheduled_time({"scheduled_time": SCHEDULED}), log=lambda _: None)
+    assert summary["notified"] == [] and summary["notify_failures"][0]["step"] == "publish"
+    assert "notified_at" not in db.plain()[("P-007", "OPEN")]
+
+
+def test_handler_skips_replayed_pipes(facility):
+    db, sns = FakeDynamoDB("incidents-poc-dj"), FakeSNS(fail="InternalErrorException")
+    rt = runtime(facility, FakeSiteWise(leak_store(facility), page=20000), db=db)
+    rt.notifier = Notifier(sns, TOPIC, rt.incidents, URL, "pipe-detail-dj", clock=lambda: WHEN, log=lambda _: None)
+    scheduled = handler.parse_scheduled_time({"scheduled_time": SCHEDULED})
+    handler.run(rt, scheduled, log=lambda _: None)
+    sns.fail = None
+    summary = handler.run(rt, scheduled, log=lambda _: None)  # a replay: P-007 is left untouched, so not notified
+    assert summary["notified"] == [] and sns.published == []

@@ -14,7 +14,8 @@
   destroyed for developer stages, point-in-time recovery on ``poc`` only. The function role gets exactly
   ``INCIDENT_ACTIONS`` (Query, PutItem, DeleteItem, TransactWriteItems) in one statement on that table; its
   name reaches the Lambda as ``INCIDENTS_TABLE``.
-  The simulator role gets nothing on it (AD-17). ``UpdateItem`` is for the ``notified_at`` outbox marker (Story 3.4).
+  The simulator role gets nothing on it (AD-17). ``UpdateItem`` (the ``notified_at`` outbox marker, Story 3.4) is a separate statement whose
+  ``dynamodb:Attributes`` condition allows only ``pk``, ``sk``, ``incident_id`` and ``notified_at``.
 - ``operators-<stage>`` SNS topic (Story 3.4; AD-7): one email subscription per address in the CDK context
   ``operator_emails`` (comma-separated, empty by default, so no subscription). The topic policy denies
   ``sns:Subscribe`` to every principal except the CDK CloudFormation execution role (the deploy path). The
@@ -71,8 +72,10 @@ INCIDENT_ACTIONS = [
     "dynamodb:PutItem",
     "dynamodb:DeleteItem",
     "dynamodb:TransactWriteItems",
-    "dynamodb:UpdateItem",
 ]
+# The notified_at outbox marker (AD-7): its own statement, limited to these attributes.
+NOTIFY_ACTIONS = ["dynamodb:UpdateItem"]
+NOTIFY_ATTRIBUTES = ["pk", "sk", "incident_id", "notified_at"]
 
 EMAILS_CONTEXT = "operator_emails"
 _EMAIL = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
@@ -82,7 +85,7 @@ DEPLOY_ROLE_PREFIX = f"cdk-{BOOTSTRAP_QUALIFIER}-cfn-exec-role-"
 
 def operator_emails(value: object) -> list[str]:
     """The ``operator_emails`` context: a comma-separated list (absent or empty: none). Duplicates dropped,
-    order kept; a malformed address fails synth."""
+    order kept (case-insensitive: the first spelling wins); a malformed address fails synth."""
     if value is None:
         return []
     if not isinstance(value, str):
@@ -94,7 +97,7 @@ def operator_emails(value: object) -> list[str]:
             continue
         if not _EMAIL.match(addr):
             raise ValueError(f"{EMAILS_CONTEXT}: not an email address: {addr!r}")
-        if addr not in out:
+        if addr.lower() not in {a.lower() for a in out}:
             out.append(addr)
     return out
 
@@ -183,6 +186,13 @@ class DetectionStack(cdk.Stack):
         )
         self.role.add_to_policy(
             iam.PolicyStatement(actions=INCIDENT_ACTIONS, resources=[self.incidents_table.table_arn])
+        )
+        self.role.add_to_policy(
+            iam.PolicyStatement(
+                actions=NOTIFY_ACTIONS,
+                resources=[self.incidents_table.table_arn],
+                conditions={"ForAllValues:StringEquals": {"dynamodb:Attributes": NOTIFY_ATTRIBUTES}},
+            )
         )
         self.role.add_to_policy(iam.PolicyStatement(actions=["sns:Publish"], resources=[self.operator_topic.topic_arn]))
         self.role.add_to_policy(

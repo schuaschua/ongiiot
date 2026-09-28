@@ -288,6 +288,23 @@ def test_handler_entry_point(facility, monkeypatch):
     monkeypatch.setattr(handler, "_RUNTIME", None)
 
 
+def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
+    fake, sns = FakeSiteWise(leak_store(facility), page=20000), FakeSNS()
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    handler.runtime(ENV, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=sns)
+
+    class Ctx:
+        def get_remaining_time_in_millis(self):
+            return 40_000
+
+    summary = handler.handler({"scheduled_time": SCHEDULED}, Ctx())
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    (msg,) = sns.published
+    assert msg["TopicArn"] == TOPIC and len(summary["notified"]) == 1
+    link = msg["Message"].split("\n")[-1].split(": ", 1)[1]
+    assert link.startswith(f"{NOTIFY_ENV['GRAFANA_URL']}/d/{NOTIFY_ENV['DASHBOARD_UID']}/")
+
+
 def test_write_client_has_no_sdk_retries(monkeypatch):
     import boto3
 
@@ -298,6 +315,9 @@ def test_write_client_has_no_sdk_retries(monkeypatch):
     rt = handler.runtime(ENV)
     monkeypatch.setattr(handler, "_RUNTIME", None)
     assert sorted(services) == ["dynamodb", "iotsitewise", "iotsitewise", "sns"]
+    (sns_config,) = [c for c, svc in zip(made, services, strict=True) if svc == "sns"]
+    assert sns_config.connect_timeout == sns_config.read_timeout == 5
+    assert sns_config.retries == {"mode": "standard", "max_attempts": 2}
     made = [c for c, svc in zip(made, services, strict=True) if svc == "iotsitewise"]
     attempts = [c.retries["max_attempts"] for c in made]
     assert sorted(attempts) == [1, 3]

@@ -146,9 +146,12 @@ def test_function_role_is_exactly_ad17(synthesized):
     assert "ManagedPolicyArns" not in role and "Policies" not in role
 
     statements = policy_statements(tpl, role_id)
-    assert all(s["Effect"] == "Allow" and "Condition" not in s for s in statements)
+    assert all(s["Effect"] == "Allow" for s in statements)
+    assert [s["Condition"] for s in statements if "Condition" in s] == [
+        {"ForAllValues:StringEquals": {"dynamodb:Attributes": ["pk", "sk", "incident_id", "notified_at"]}}
+    ]
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
-    assert len(grants) == len(statements) == 5
+    assert len(grants) == len(statements) == 6
 
     assert grants[tuple(sorted(SITEWISE_READ_ACTIONS))] == ["*"]
     assert set(SITEWISE_READ_ACTIONS) == {
@@ -175,8 +178,11 @@ def test_function_role_is_exactly_ad17(synthesized):
     table = [{"Fn::GetAtt": [table_id(tpl), "Arn"]}]
     assert grants[tuple(sorted(INCIDENT_ACTIONS))] == table
     assert sorted(INCIDENT_ACTIONS) == sorted(
-        ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems", "dynamodb:UpdateItem"]
+        ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems"]
     )
+    # AD-7: UpdateItem only for the notified_at marker, in its own conditioned statement.
+    (upd,) = [s for s in statements if s["Action"] == "dynamodb:UpdateItem"]
+    assert as_list(upd["Resource"]) == table
 
     # AD-7: publish on this stage's operator topic only.
     assert grants[("sns:Publish",)] == [{"Ref": topic_id(tpl)}]
@@ -184,7 +190,7 @@ def test_function_role_is_exactly_ad17(synthesized):
     # AD-4: nothing on sim_control, injection_log or any other service.
     actions = {a for s in statements for a in as_list(s["Action"])}
     dynamo = [s for s in statements if any(a.startswith("dynamodb:") for a in as_list(s["Action"]))]
-    assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 1
+    assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 2
     assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs", "dynamodb", "sns"}
 
 
@@ -314,10 +320,11 @@ def test_operator_topic_without_subscriptions_by_default(synthesized):
     (stmt,) = policy["PolicyDocument"]["Statement"]
     assert stmt["Effect"] == "Deny" and stmt["Action"] == "sns:Subscribe" and stmt["Principal"] == {"AWS": "*"}
     assert stmt["Resource"] == {"Ref": topic_id(tpl)}
-    (cond,) = stmt["Condition"]["ArnNotLike"].values()
-    assert list(stmt["Condition"]["ArnNotLike"]) == ["aws:PrincipalArn"]
-    rendered = json.dumps(cond)
-    assert ":role/cdk-hnb659fds-cfn-exec-role-" in rendered
+    assert stmt["Condition"]["ArnNotLike"] == {
+        "aws:PrincipalArn": stack.resolve(
+            f"arn:{stack.partition}:iam::{stack.account}:role/cdk-hnb659fds-cfn-exec-role-{stack.account}-ap-southeast-1"
+        )
+    }
 
 
 def test_operator_topic_two_addresses():
@@ -330,7 +337,7 @@ def test_operator_topic_two_addresses():
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, []), ("", []), (" , ", []), ("a@x.io", ["a@x.io"]), ("a@x.io,b@y.io,a@x.io", ["a@x.io", "b@y.io"])],
+    [(None, []), ("", []), (" , ", []), ("a@x.io", ["a@x.io"]), ("a@x.io,b@y.io,a@x.io", ["a@x.io", "b@y.io"]), ("A@X.io, a@x.IO", ["A@X.io"])],
 )
 def test_operator_emails_parsing(value, expected):
     assert operator_emails(value) == expected

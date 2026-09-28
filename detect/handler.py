@@ -20,7 +20,8 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    for every pipe except those the replay guard left untouched (AD-13).
 5c. Notify (AD-7, ``detect/adapters/notifier.py``): for every OPEN incident without ``notified_at``, publish one
    Email v1 message to ``OPERATOR_TOPIC_ARN``, then set ``notified_at`` (the outbox). A failed publish is logged
-   and retried by the next run; it never fails the run.
+   and retried by the next run; it never fails the run. Pipes the replay guard or a lost write race left untouched
+   are skipped, and publishing stops when the Lambda has less than 10 s left (step ``deadline``).
 6. Log one JSON summary line, with pass 2's ``findings: [{detector, pipe, confidence, explanation,
    evidence_aliases}]``, ``suppressed: [{detector, pipe, reason, scope}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
    ``pass2_skipped``, ``source_outage``, ``incident_conflicts`` (pipes left to the next run), ``incident_ops`` (``opened``/``updated``/``closed``/``reopened``: ``[{pipe, incident_id}]``),
@@ -164,6 +165,7 @@ def run(
     pass2: Sequence[Detector] = PASS2_DETECTORS,
     clock: Callable[[], float] = time.monotonic,
     log: Callable[[str], None] = print,
+    remaining_ms: Callable[[], int] | None = None,
 ) -> dict[str, Any]:
     t_run = clock()
     f = rt.facility
@@ -268,7 +270,16 @@ def run(
 
     # Notify (AD-7): after the incident and alert writes; one email per incident via the notified_at outbox.
     t3 = clock()
-    notified = rt.notifier.notify(applied.open.values(), run_id=run_id) if rt.notifier is not None else NotifyResult()
+    notify_res = (
+        rt.notifier.notify(
+            applied.open.values(),
+            run_id=run_id,
+            skip={*applied.replayed, *applied.conflicts},
+            remaining_ms=remaining_ms,
+        )
+        if rt.notifier is not None
+        else NotifyResult()
+    )
     notify_s = clock() - t3
 
     summary = {
@@ -303,8 +314,8 @@ def run(
         "incident_ops": applied.ops,
         "incident_conflicts": applied.conflicts,
         "alert_state": {pid: incident_rules.alert_state(inc) for pid, inc in applied.open.items() if inc is not None},
-        "notified": notified.notified,
-        "notify_failures": notified.failures,
+        "notified": notify_res.notified,
+        "notify_failures": notify_res.failures,
         "run_s": round(clock() - t_run, 3),
     }
     log(json.dumps(summary, separators=(",", ":")))
@@ -448,7 +459,9 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
             import boto3
             from botocore.config import Config
 
-            sns = boto3.client("sns", config=Config(retries={"mode": "standard", "max_attempts": 3}))
+            sns = boto3.client(
+                "sns", config=Config(connect_timeout=5, read_timeout=5, retries={"mode": "standard", "max_attempts": 2})
+            )
         if client is None:
             import boto3
             from botocore.config import Config
@@ -475,4 +488,5 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
 
 
 def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
-    return run(runtime(), parse_scheduled_time(event))
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    return run(runtime(), parse_scheduled_time(event), remaining_ms=remaining)
