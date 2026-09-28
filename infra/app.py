@@ -6,6 +6,8 @@
 ``SimulatorStack-<stage>`` depends on it, so ``cdk deploy "*-<stage>"`` creates or reuses it.
 ``SharedGrafanaStack`` (fixed name, one Managed Grafana workspace) works the same way through
 ``GrafanaStack-<stage>``, which provisions the stage's folder, data source and dashboards.
+``DetectionStack-<stage>`` runs the 1-minute detection Lambda; its schedule follows the same
+``simulator`` switch (``off`` disables it).
 
 ``-c oidc=true`` also adds the one-time ``GitHubOidcStack`` (fixed name, no stage
 suffix). Workflows never pass it and deploy only ``*-<stage>``, so they do not target it;
@@ -19,6 +21,7 @@ import os
 import aws_cdk as cdk
 
 from facility.model import DEFAULT_PATH, load
+from infra.stacks.detection import DetectionStack
 from infra.stacks.github_oidc import STACK_NAME as OIDC_STACK_NAME
 from infra.stacks.github_oidc import GitHubOidcStack
 from infra.stacks.grafana import SharedGrafanaStack
@@ -49,6 +52,14 @@ def build_app(app: cdk.App | None = None) -> cdk.App:
     )
     simulator.add_stack_dependency(sitewise)  # AD-10: the simulator stack depends on the asset stack
     simulator.add_stack_dependency(network)  # `cdk deploy "*-<stage>"` creates or reuses it
+    detection = DetectionStack(
+        app,
+        f"DetectionStack-{stage}",
+        facility=facility,
+        pipe_asset_arns=[a.attr_asset_arn for a in sitewise.pipe_assets.values()],
+        env=env,
+    )
+    detection.add_stack_dependency(sitewise)  # derived writes go to this stage's pipe assets
     shared_grafana = SharedGrafanaStack(app, env=env)  # one workspace for every stage
     GrafanaStack(app, f"GrafanaStack-{stage}", facility=facility, shared=shared_grafana, env=env)
     if str(app.node.try_get_context("oidc")).lower() == "true":

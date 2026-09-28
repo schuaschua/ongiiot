@@ -128,6 +128,7 @@ def test_absent_without_oidc_context():
         "SharedNetworkStack",
         "SiteWiseAssetsStack-poc",
         "SimulatorStack-poc",
+        "DetectionStack-poc",
         "SharedGrafanaStack",
         "GrafanaStack-poc",
     }
@@ -141,6 +142,7 @@ def test_present_with_oidc_context(flag):
         "SharedNetworkStack",
         "SiteWiseAssetsStack-poc-dj",
         "SimulatorStack-poc-dj",
+        "DetectionStack-poc-dj",
         "SharedGrafanaStack",
         "GrafanaStack-poc-dj",
         "GitHubOidcStack",

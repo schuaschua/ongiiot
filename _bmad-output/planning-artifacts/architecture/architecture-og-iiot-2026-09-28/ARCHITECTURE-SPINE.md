@@ -238,6 +238,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Rule:**
   - `reader.py` returns `FacilityWindow` with raw samples and every expected alias present (empty list if no data).
   - Primary: `ExecuteQuery` filtered on `event_timestamp`. Fallback: `BatchGetAssetPropertyValueHistory` (16 entries per request, parallel). A day-1 spike at full load (50 pipes × 6 × 900 s) picks one; the choice stays inside the adapter.
+  - Spike result (2026-09-29, Story 2.1): **`batch_get` is the default** (`DEFAULT_STRATEGY` in `detect/adapters/reader.py`); `execute_query` stays selectable. Measured from a laptop in `ap-southeast-1` against `poc-dj` history, all 144 aliases, one 15-minute window holding 70,992 samples (about 490 s of 1 Hz data): `batch_get` 0.8–1.3 s (9 requests in parallel); `execute_query` 14.6–14.9 s (15 pages of at most about 5,800 rows, strictly sequential through `nextToken`), which extrapolates to about 27 s at a full 129,600-sample window, over half the 50 s timeout. Both returned identical windows. A `property_alias IN (…)` list of 144 aliases returned samples for only a subset of them, so `execute_query` filters by the aliases' common prefix (`LIKE`) and drops other aliases in the adapter. **In-Lambda at full load** (`poc-dj`, 2026-09-29 00:38 +08, 129,600 samples, 1024 MB): a whole run (read + score + 288 writes) takes 6.4–6.8 s with `batch_get` and 19.2–22.1 s with `execute_query`. `batch_get` stays the default, with wide margin under the 50 s timeout.
   - Asset metadata is cached per cold start.
 
 ## Shared Shapes
@@ -376,7 +377,7 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 
 | Name | Version |
 | --- | --- |
-| Python (Lambda runtime and simulator image `python:3.14-slim`) | 3.14 |
+| Python (Lambda runtime, detection image `public.ecr.aws/lambda/python:3.14`, simulator image `python:3.14-slim`) | 3.14 |
 | aws-cdk-lib (CDK Python) | 2.271.0 |
 | boto3 | pinned in `uv.lock`, bundled in the Lambda asset |
 | PyYAML, python-ulid | pinned in `uv.lock` |
@@ -387,7 +388,7 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 | Amazon DynamoDB (`incidents`, `sim_control`, `injection_log`) | managed service |
 | Amazon SNS (operator topic, team-alarms topic) | managed service |
 | Amazon ECS on Fargate (simulator, one task, 0.25 vCPU / 0.5 GB, X86_64) | managed service |
-| uv (simulator image build, `ghcr.io/astral-sh/uv`) | 0.12.19 |
+| uv (simulator and detection image builds, `ghcr.io/astral-sh/uv`) | 0.12.19 |
 | AWS IAM Identity Center (Grafana login; organization instance in `us-east-1`) | managed service |
 | GitHub Actions with AWS OIDC (`GitHubOidcStack`, roles `ongiiot-github-deploy` and `ongiiot-github-diff`) | managed service |
 | AWS CDK CLI (CI, `npx aws-cdk@…`) | 2.1143.0 |
@@ -491,7 +492,7 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 | Question | Verify by |
 | --- | --- |
 | ~~Can SiteWise IAM scope `BatchPutAssetPropertyValue` by alias prefix (AD-17)?~~ Resolved 2026-09-28: no; grants are scoped to pipe asset ARNs and the code guard is the boundary | AWS service authorization reference |
-| ExecuteQuery latency at full load within the 50 s timeout (AD-18)? | Day 1 reader spike; switch to BatchGet fallback if not |
+| ~~ExecuteQuery latency at full load within the 50 s timeout (AD-18)?~~ **Resolved 2026-09-29:** ExecuteQuery 19–22 s and BatchGet 6.4–6.8 s per full run in the Lambda; `batch_get` is the default. | Done |
 | ~~Can IAM Identity Center be enabled in the POC account for Grafana?~~ **Resolved 2026-09-28:** yes, the organization instance `ssoins-7223813109c6d7dd` (`us-east-1`) is enabled; the workspace (`ap-southeast-1`) uses `AWS_SSO`. Cross-region sign-in is confirmed on the first live `poc-dj` deploy; if it fails, fall back to self-hosted Grafana with the same dashboards and record it here | First `poc-dj` deploy of Story 1.5 |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
 | ~~Does 1 Hz per measurement hold on Fargate, and do alias writes succeed with grants on pipe asset ARNs?~~ **Resolved 2026-09-28 (first `poc-dj` deploy):** 1 Hz holds (60 GOOD values per 60 s, no gaps; all 144 aliases fresh). Asset ARNs alone are not enough: alias-addressed writes are authorised against the time series, so the seed Lambda and simulator task also hold `time-series/*` (AD-17). | Done |

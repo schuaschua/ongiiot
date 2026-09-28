@@ -1,7 +1,8 @@
 # Deploys run only by manual dispatch ("Run workflow"); starting the run is the approval.
 # `poc`: only from `main` (environment `poc`, branch rule `main`).
 # `poc-<initials>`: developer stages from any branch (environment `dev`).
-# `simulator`: on (default) runs the simulator task; off stops it (desired count 0).
+# `simulator`: on (default) runs the simulator task and the detection schedule; off stops both
+# (desired count 0, schedule DISABLED).
 # Every deploy waits for the `test` job; no AWS access before it passes.
 # Runbook: docs/ci-cd.md
 name: deploy
@@ -14,7 +15,7 @@ on:
         required: true
         type: string
       simulator:
-        description: "Simulator task: on (desired count 1) or off (0; tables and history kept)"
+        description: "Simulator task and detection schedule: on (count 1, ENABLED) or off (0, DISABLED; tables and history kept)"
         required: true
         type: choice
         options: ["on", "off"]

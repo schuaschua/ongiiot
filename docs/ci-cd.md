@@ -11,7 +11,7 @@ Both roles may also read `/cdk-bootstrap/hnb659fds/version`. Neither has any dir
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | pull request to `main`, push to `main` | `test` (pytest), `synth` (`cdk synth -c stage=poc`, no AWS), `diff` (PRs only, diff role: `cdk diff "*-poc" --method template`). Never deploys. |
+| `.github/workflows/ci.yml` | pull request to `main`, push to `main` | `test` (pytest), `synth` (`cdk synth -c stage=poc`, no AWS), `image` (builds and smoke-imports the simulator and detection images, no AWS), `diff` (PRs only, diff role: `cdk diff "*-poc" --method template`). Never deploys. |
 | `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc`, from `main` only | `test`, then deploys `*-poc` in the `poc` environment (input `simulator`: `on` or `off`, see section 5) |
 | `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc-<initials>`, any branch | `test`, then deploys `*-poc-<initials>` in the `dev` environment |
 
@@ -19,7 +19,7 @@ Nothing deploys automatically. A push or merge to `main` only runs `ci.yml`. Sta
 
 In `deploy.yml`, the `deploy` job needs both `test` and `resolve`. If the tests fail, AWS is never touched.
 
-The CDK CLI is pinned to `aws-cdk@2.1143.0` (Node 22). Python deps come from `uv.lock` (`uv sync --locked`). The deploy builds the simulator image (`sim/Dockerfile`, linux/amd64) with the runner's Docker and publishes it through the CDK image-publishing bootstrap role; `ci.yml`'s `cdk synth` does not build it.
+The CDK CLI is pinned to `aws-cdk@2.1143.0` (Node 22). Python deps come from `uv.lock` (`uv sync --locked`). The deploy builds the simulator image (`sim/Dockerfile`) and the detection image (`detect/Dockerfile`), both linux/amd64, with the runner's Docker and publishes them through the CDK image-publishing bootstrap role; `ci.yml`'s `cdk synth` does not build them. Each image asset excludes the other's code, so a detection-only change does not rebuild or restart the simulator.
 
 ## 1. One-time AWS setup
 
@@ -69,12 +69,12 @@ gh workflow run deploy.yml --ref <branch> -f stage=poc-dj
 
 The stage must be `poc-` followed by 1 to 12 lowercase letters or digits (`facility/model.py` `STAGE_RE`, checked with `fullmatch`). The `resolve` job refuses `poc` from a branch other than `main`, `prod`, `poc-DJ!` and anything else before any AWS call. The tests must pass, then the deploy targets only `*-poc-<initials>`.
 
-## 5. Stopping and starting the simulator
+## 5. Stopping and starting the simulator (and detection)
 
 Each stage runs one simulator task on ECS Fargate (`SimulatorStack-<stage>`), which is expected to write every raw alias at 1 Hz. This is confirmed only once the first `poc-<initials>` deploy has run. It runs only while testing. The `deploy` workflow has a required `simulator` input, `on` (default) or `off`, passed to CDK as `-c simulator=<value>`:
 
-- `on` sets the service's desired count to 1.
-- `off` sets it to 0. Nothing else changes: the `sim-control-<stage>` and `injection-log-<stage>` tables and the SiteWise history stay.
+- `on` sets the service's desired count to 1 and the detection schedule (`detection-<stage>`, section 7) to `ENABLED`.
+- `off` sets the count to 0 and the schedule to `DISABLED`, so detection costs nothing while testing is off. Nothing else changes: the `sim-control-<stage>` and `injection-log-<stage>` tables and the SiteWise history stay.
 
 To stop or start it, dispatch the deploy for the same stage with the other value:
 
@@ -140,6 +140,21 @@ The dashboards come from `dashboards/pipe-detail.json` and `dashboards/facility-
 The provisioning Lambda (`grafana-provision-<stage>`) holds only the Grafana service-account actions on this workspace. Its per-stage service account (`ongiiot-provision-<stage>`) has the Grafana ADMIN role, which is workspace-wide: while its token lives it could change any stage's folders, data sources and dashboards, not only its own. On every run it mints a service-account token that lives at most 15 minutes and deletes it again. No API key is stored anywhere. Deleting `GrafanaStack-<stage>` removes the stage's folder, dashboards, data source and service account. The CI deploy role and its trust are unchanged: provisioning runs as a CloudFormation custom resource under the CDK execution role.
 
 If sign-in through Identity Center does not work across regions, record it in the spine's Open Questions and fall back to self-hosted Grafana with the same dashboards (see the spine's Open Questions).
+
+## 7. Detection
+
+Each stage runs the detection Lambda `detection-<stage>` (`DetectionStack-<stage>`, image `detect/Dockerfile` built from `uv.lock`). EventBridge Scheduler `detection-<stage>` invokes it every minute with `{"scheduled_time": "<aws.scheduler.scheduled-time>"}`, which is the run ID (AD-12). It is single-flight: reserved concurrency 1, timeout 50 s, no async retries, events older than 60 s dropped, schedule retries 0 and no flexible window. The next scheduled run is the only retry.
+
+Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. Until the Story 2.2 and 2.3 checks exist, a sensor with any samples in the window scores `1.0` with an empty `_dq_fail`, even if none of them is GOOD (all BAD or UNCERTAIN still scores `1.0`). A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
+
+The schedule follows the `simulator` switch (section 5). To check a run, read the one JSON summary line per run in the log group `/aws/lambda/detection-<stage>` (1-week retention): `run_id`, `window_start`, `window_end`, `reader_strategy`, `read_duration_s`, `aliases_no_data`, `values_written` (288 for 144 sensors). Or read a value:
+
+```bash
+aws iotsitewise get-asset-property-value --region ap-southeast-1 \
+  --property-alias /poc-dj/lng1/train1/P-007/derived/flow_in_dq
+```
+
+The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
 ## What this does and does not protect
 

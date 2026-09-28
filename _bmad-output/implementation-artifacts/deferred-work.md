@@ -37,3 +37,12 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-1-5-grafana.md`
   summary: Test service-account lookup pagination in the Grafana provisioning handler with a paging fake.
   evidence: `_find_service_account` follows nextToken, but the fake never pages; fine at POC scale.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
+  summary: Test the BatchGet reader's skippedEntries (non-SUCCESS) and unknown-entryId error paths.
+  evidence: The fake always returns an empty skippedEntries list; an inverted check would record a read failure as a dq_gap.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
+  summary: Add typed PipeDetector/FacilityDetector protocols to detect/core/models.py when Story 2.2 adds the first detectors; teach run() to tell pipe and facility detectors apart.
+  evidence: PASS1_DETECTORS is Sequence[Any] today; the contract is only in comments.
+- source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
+  summary: Story 4.4 alarms must include detection Lambda Errors and Scheduler TargetErrorCount/InvocationDroppedCount (no retries, no DLQ by design).
+  evidence: A detector failing every minute would otherwise leave stale _dq values unnoticed.
