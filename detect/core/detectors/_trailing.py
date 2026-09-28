@@ -1,4 +1,9 @@
-"""Shared maths for trailing-run detectors (``dq_flatline``, ``dq_stuck``). Pure, no I/O."""
+"""Shared helpers for the pass-1 ``dq_*`` detectors. Pure, no I/O.
+
+Tunables validation (``own_tunables``) and the GOOD-sample test (``is_good``) serve all four
+(``dq_flatline``, ``dq_stuck``, ``dq_drift``, ``dq_gap``); ``confidence`` also serves ``dq_gap``; the
+trailing-run maths (``trailing_run``, ``run_seconds``, ``max_gap_s``) serves ``dq_flatline`` and ``dq_stuck``.
+"""
 
 from __future__ import annotations
 

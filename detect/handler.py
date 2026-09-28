@@ -4,8 +4,9 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
 
 1. ``run_id = scheduled_time``; the window is aligned from it (AD-9), never from ``now()``.
 2. Read the ``FacilityWindow`` through the reader adapter (``READER_STRATEGY``).
-3. Pass 1: the ``dq_*`` detectors (``dq_flatline``, ``dq_stuck``), dispatched by ``kind`` (``pipe``: once
-   per pipe; ``facility``: once per run), then ``dq_score`` with the no-sample gap rule.
+3. Pass 1: the ``dq_*`` detectors (``dq_flatline``, ``dq_stuck``, ``dq_gap``: pipe; ``dq_drift``: facility),
+   dispatched by ``kind`` (``pipe``: once per pipe; ``facility``: once per run), then ``dq_score`` with
+   the no-sample gap rule (one ``dq_gap`` finding per empty alias).
 4. Write ``<m>_dq`` and ``<m>_dq_fail`` for every sensor at ``window_end``.
 5. Log one JSON summary line.
 
@@ -35,7 +36,7 @@ from detect.core.models import Contract, Detector, FacilityWindow, Finding, Pipe
 from detect.core.window import window_bounds
 from facility.model import DEFAULT_PATH, Facility, load
 
-PASS1_DETECTORS: Sequence[Detector] = PASS1  # dq_drift and dq_gap arrive in Story 2.3
+PASS1_DETECTORS: Sequence[Detector] = PASS1
 KINDS = ("pipe", "facility")
 
 

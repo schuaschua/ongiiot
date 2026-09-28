@@ -2,8 +2,10 @@
 
 - ``score(findings_for_alias) -> (dq, failing)``: ``dq = 1 - max(confidence of dq_* findings)``,
   ``1.0`` if there are none (confidences clamped to [0, 1], non-finite counted as 1.0); ``failing`` is the sorted, de-duplicated ``dq_*`` ids joined by commas.
-- The gap rule: an alias with no samples in the window scores ``0.0`` with ``dq_gap``
-  (``gap_findings``), whether or not a ``dq_gap`` detector also ran.
+- The gap rule: an alias with no samples in the window scores ``0.0`` with ``dq_gap``. The ``dq_gap``
+  detector is the source of that finding when it ran; ``gap_findings`` adds the rule's own finding
+  only for an empty alias that has no ``dq_gap`` finding yet (e.g. the detector failed), so exactly
+  one ``dq_gap`` finding names each empty alias.
 """
 
 from __future__ import annotations
@@ -69,10 +71,17 @@ def check_finding(f: Finding, known_aliases: Iterable[str]) -> None:
         raise ValueError(f"{f.detector_id}: alias {f.evidence_aliases[0]} is not an expected alias of the window")
 
 
+def with_gap_rule(fw: FacilityWindow, findings: Iterable[Finding]) -> list[Finding]:
+    """``findings`` plus the gap rule's finding for each empty alias not already named by a ``dq_gap`` finding."""
+    found = list(findings)
+    covered = {a for f in found if f.detector_id == GAP_ID for a in f.evidence_aliases}
+    return found + [g for g in gap_findings(fw) if g.evidence_aliases[0] not in covered]
+
+
 def score_facility(fw: FacilityWindow, findings: Iterable[Finding]) -> dict[str, tuple[float, str]]:
     """``alias -> (dq, failing)`` for every expected alias, with the gap rule applied."""
     by_alias: dict[str, list[Finding]] = {a: [] for p in fw.pipes.values() for a in p.aliases.values()}
-    for f in [*findings, *gap_findings(fw)]:
+    for f in with_gap_rule(fw, findings):
         if not is_dq(f):
             continue
         check_finding(f, by_alias)
