@@ -100,8 +100,9 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | 1.2 | OG-6 | Done |
 | 1.3 | OG-7 | Done (merged in PR #1, `ee4936f`; poc not yet deployed) |
 | 1.4 | OG-8 | Done (PR #2) |
-| 1.5 | OG-9 | In Progress |
-| 2.1–2.4 | OG-10 – OG-13 | To Do |
+| 1.5 | OG-9 | Done (PR #3) |
+| 2.1 | OG-10 | In Progress |
+| 2.2–2.4 | OG-11 – OG-13 | To Do |
 | 3.1–3.4 | OG-14 – OG-17 | To Do |
 | 4.1–4.5 | OG-18 – OG-22 | To Do |
 
