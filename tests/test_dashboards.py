@@ -97,6 +97,20 @@ def test_overview_pipe_prototypes_link_to_pipe_detail(title):
     assert all(t["queryType"] == "PropertyValue" and t["datasource"] == DS for t in proto["targets"])  # latest value
 
 
+@pytest.mark.parametrize("title", ["__PIPE_ID__ (__AREA__)", "__PIPE_ID__ trust", "__PIPE_ID__ failing checks"])
+def test_overview_pipe_prototypes_cover_every_measurement(title):
+    # A renamed or added sensor in facility/model.py must show up here.
+    proto = pipe_protos()[title]
+    assert [t["refId"] for t in proto["targets"]] == list(MEASUREMENTS)
+    suffix = {"__PIPE_ID__ (__AREA__)": "", "__PIPE_ID__ trust": "_dq", "__PIPE_ID__ failing checks": "_dq_fail"}[title]
+    assert [t["propertyAlias"].rsplit("/", 1)[1] for t in proto["targets"]] == [m + suffix for m in MEASUREMENTS]
+
+
+def test_overview_trust_shows_three_decimals():
+    # 0.496 must not read "0.50" in red next to dq_min 0.5.
+    assert pipe_protos()["__PIPE_ID__ trust"]["fieldConfig"]["defaults"]["decimals"] == 3
+
+
 def test_overview_raw_prototype_targets():
     proto = pipe_protos()["__PIPE_ID__ (__AREA__)"]
     assert [t["propertyAlias"] for t in proto["targets"]] == [
@@ -125,9 +139,12 @@ def test_overview_failing_prototype_shows_non_empty_checks():
     ]
     # String fields are shown only through an explicit field regex.
     assert proto["options"]["reduceOptions"]["fields"] == "/_dq_fail$/"
-    (mapping,) = proto["fieldConfig"]["defaults"]["mappings"]
-    assert mapping["type"] == "special" and mapping["options"]["match"] == "empty"
-    assert mapping["options"]["result"]["text"] == "none"
+    # Empty and null/missing values both read as a green "none"; anything else is red.
+    mappings = proto["fieldConfig"]["defaults"]["mappings"]
+    assert [(m["type"], m["options"]["match"]) for m in mappings] == [("special", "empty"), ("special", "null+nan")]
+    for m in mappings:
+        result = {k: v for k, v in m["options"]["result"].items() if k != "index"}
+        assert result == {"text": "none", "color": "green"}
     assert proto["fieldConfig"]["defaults"]["thresholds"]["steps"] == [{"color": "red", "value": None}]
 
 

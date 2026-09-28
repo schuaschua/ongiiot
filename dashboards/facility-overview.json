@@ -292,7 +292,7 @@
               "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
             }
           ],
-          "decimals": 2,
+          "decimals": 3,
           "min": 0,
           "max": 1,
           "color": {
@@ -514,6 +514,17 @@
                   "text": "none",
                   "color": "green",
                   "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "none",
+                  "color": "green",
+                  "index": 1
                 }
               }
             }

@@ -7,7 +7,8 @@ style of ``SeedAttributes``) that provisions, in the shared workspace:
 - SiteWise data source ``sitewise-<stage>`` (region ap-southeast-1, workspace IAM role);
 - dashboards ``pipe-detail`` / ``facility-overview`` (``poc``) or ``pipe-detail-<initials>`` /
   ``facility-overview-<initials>``, from the templates in ``dashboards/`` with
-  ``alias_root``, the pipe list and ``tunables.dq_min`` taken from ``facility/model.py``.
+  ``alias_root`` and the pipe list from ``facility/model.py``, and ``tunables.dq_min`` from
+  ``facility/facility.yaml`` (parsed by ``facility/model.py``).
 
 The handler mints a service-account token of at most 15 minutes and deletes it again.
 Its role holds only the Grafana service-account actions on this workspace.
