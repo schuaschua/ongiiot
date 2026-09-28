@@ -3,7 +3,7 @@ title: 'Story 3.3: Group findings into one explainable incident per pipe'
 type: 'feature'
 ticket: 'OG-16'
 created: '2026-09-29'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -88,7 +88,7 @@ After the incident updates, each run writes `alert_state` and `alert_summary` fo
 - [x] `infra/stacks/detection.py` -- the table, env and exact grants; update the exact-policy tests. -- infra.
 - [x] Tests: every matrix row except Live, with a faithful fake table (conditions and transactions); an AD-12 replay test; alert-summary size capping. -- matrix.
 - [x] `docs/ci-cd.md` §7 -- incidents, alert state, and how to read the table. -- operability.
-- [ ] Live (the orchestrator runs this). -- acceptance.
+- [x] Live (the orchestrator runs this). -- acceptance.
 
 **Acceptance Criteria:**
 - Given the repo, when `uv run pytest -q` runs, then all tests pass.
@@ -106,6 +106,12 @@ After the incident updates, each run writes `alert_state` and `alert_summary` fo
   - `alert_summary` confidences are rounded to 2 dp (display); stored confidences are unrounded. Past 1024 bytes, `evidence` goes first, then trailing detectors.
   - `DerivedWriter`: Python `int` -> `integerValue` (32-bit range), `float` -> `doubleValue`; the handler casts `_dq` to `float`. Alerts are a second `write` call after the incident step, so `values_written` is 288 + 48.
   - The DynamoDB client is a low-level `boto3.client("dynamodb")` (typed attribute values via `TypeSerializer`), standard retries, 3 attempts. `INCIDENTS_TABLE` is required at cold start, and `quiet_runs_to_close` / `reopen_grace_s` are checked there too.
+
+- Live check (2026-09-29 04:29–04:43 +08, `poc-dj`, deploy run 36478254459, pre-review code `626e039`):
+  - Default leak on P-007 04:29–04:33.
+  - At 04:34: one OPEN incident on P-007 with `leak_mass_balance`, `leak_methane_rise` and `outlier_peer` (confidence 1.0); SiteWise `alert_state` = 3 (`integerValue`), and `alert_summary` JSON with `incident_id`, the detectors and the evidence. No other incidents; no startup gap incidents.
+  - At 04:43, after the cancel and quiet runs: no OPEN slot, one CLOSED item (`closed_reason` `quiet`), `alert_state` 0, `alert_summary` `{}`.
+  - Switched off with the reviewed code (`7f886f3`).
 
 ## Plan Change Log
 
