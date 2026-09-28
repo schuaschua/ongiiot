@@ -236,6 +236,16 @@ def resolve(items: Iterable[Injection]) -> list[Injection]:
     return sorted(out, key=lambda i: (i.start_at, i.injection_id))
 
 
+def windows(items: Iterable[Injection]) -> list[tuple[Injection, datetime]]:
+    """Each injection (cancel items folded away) with its effective window, paired with its planned ``end_at``.
+
+    The returned injection's ``end_at`` is the effective end: the planned end shortened by any cancel.
+    """
+    items = list(items)
+    planned = {i.injection_id: i.end_at for i in items if not i.is_cancel}
+    return [(i, planned[i.injection_id]) for i in resolve(items) if not i.is_cancel]
+
+
 def effective(items: Iterable[Injection], now: datetime) -> list[Injection]:
     """Injections applied at ``now``: windows resolved, ``start_at <= now < end_at``."""
     return [i for i in resolve(items) if not i.is_cancel and i.active_at(now)]

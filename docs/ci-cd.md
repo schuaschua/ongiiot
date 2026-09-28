@@ -94,6 +94,15 @@ aws iotsitewise get-asset-property-value --region ap-southeast-1 \
 
 Allow at least 30 minutes of warm-up before a demo or a detection test (AD-15: two detection windows of history).
 
+**Listing injections.** `ops.inject list` reads `sim-control-<stage>` only (read-only) and shows active injections and those that ended within `--recent-min` minutes (default 60): ID, type, pipe, measurement, start, effective end (the planned end shortened by any cancel), planned end and state. Use it to find the ID for `cancel`. `--json` prints one JSON object per injection.
+
+```bash
+SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject list
+SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject list --json --recent-min 240
+```
+
+When a cancel ends an injection that has already applied, the simulator sets `effective_end` once on that injection's `injection-log-<stage>` row; the planned `end_at` stays. An injection cancelled before it applied has no row. This needs the task role's `dynamodb:UpdateItem` grant on that table (Story 4.1): redeploy `SimulatorStack-<stage>` before `effective_end` writes succeed (until then they fail, are logged and retried; the stream is unaffected).
+
 - **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
 - **Shared network:** all stages run in one VPC, `SharedNetworkStack` (fixed name, no stage suffix). The first stage deploy creates it, because every `SimulatorStack-<stage>` depends on it; later deploys reuse it. Deleting a stage leaves it in place.
 - **`poc` tables are retained:** `sim-control-poc` and `injection-log-poc` have fixed names and `RETAIN`. After deleting `SimulatorStack-poc`, delete those tables (or import them into the stack) before redeploying, or the deploy fails because the names already exist.

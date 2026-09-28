@@ -161,3 +161,91 @@ def test_facility_path_is_honoured(capsys):
     assert code == 2 and table.writes == 0 and "no/such/facility.yaml" in capsys.readouterr().err
     code = inject.main(argv, env=ENV | {"FACILITY_PATH": str(DEFAULT_PATH)}, table=table, now=lambda: NOW, new_id=lambda: "01A")
     assert code == 0 and table.writes == 1
+
+
+# -- list (Story 4.1) --------------------------------------------------------------------
+
+def _listing_table():
+    from datetime import timedelta
+
+    from facility.control import cancel_of, new_injection, to_item
+
+    f = load(stage="poc-dj")
+    now = NOW.replace(microsecond=123000)
+    m = lambda n: timedelta(minutes=n)  # noqa: E731
+    leak = new_injection("01LEAK", "leak", "P-007", now - m(5), now + m(15), facility=f)
+    flat = new_injection("01FLAT", "dq_flatline", "P-003", now - m(20), now + m(10), measurement="flow_in", facility=f)
+    cancel = cancel_of(flat, "01CANC", now - m(8))
+    stuck = new_injection("01STUCK", "dq_stuck", "P-015", now - m(40), now - m(10), measurement="temperature", facility=f)
+    old = new_injection("01OLD", "leak", "P-007", now - m(300), now - m(200), facility=f)
+    return FakeTable([to_item(i) for i in (leak, flat, cancel, stuck, old)], page_size=2)
+
+
+def test_list_json_folds_cancels_and_classifies(capsys):
+    table = _listing_table()
+    before = dict(table.items)
+    code, _ = cli(["list", "--json"], table=table)
+    assert code == 0 and table.items == before and table.writes == 0  # read-only
+    rows = {r["id"]: r for r in map(json.loads, capsys.readouterr().out.splitlines())}
+    assert set(rows) == {"01LEAK", "01FLAT", "01STUCK"}  # cancel folded, old one outside --recent-min
+    assert rows["01LEAK"]["state"] == "active"
+    assert rows["01FLAT"] == {
+        "id": "01FLAT",
+        "type": "dq_flatline",
+        "pipe": "P-003",
+        "measurement": "flow_in",
+        "start": "2026-09-28T09:40:00.123Z",
+        "planned_end": "2026-09-28T10:10:00.123Z",
+        "effective_end": "2026-09-28T09:52:00.123Z",
+        "state": "recent",
+        "cancelled": True,
+    }
+    assert rows["01STUCK"]["state"] == "recent"
+    assert rows["01STUCK"]["effective_end"] == rows["01STUCK"]["planned_end"] and rows["01STUCK"]["cancelled"] is False
+
+
+def test_list_recent_window_and_table(capsys):
+    code, _ = cli(["list", "--recent-min", "400"], table=_listing_table())
+    out = capsys.readouterr().out.splitlines()
+    assert code == 0 and out[0].split() == ["id", "type", "pipe", "measurement", "start", "effective_end", "planned_end", "state", "cancelled"]
+    assert {line.split()[0] for line in out[1:]} == {"01LEAK", "01FLAT", "01STUCK", "01OLD"}
+
+
+def test_list_empty(capsys):
+    code, _ = cli(["list"])
+    assert code == 0 and capsys.readouterr().out == "no injections\n"
+
+
+def test_list_scheduled_cancelled_and_malformed(capsys):
+    from datetime import timedelta
+
+    from facility.control import cancel_of, new_injection, to_item
+
+    f = load(stage="poc-dj")
+    now = NOW.replace(microsecond=123000)
+    later = new_injection("01LATE", "leak", "P-007", now + timedelta(minutes=5), now + timedelta(minutes=9), facility=f)
+    gone = new_injection("01GONE", "leak", "P-007", now + timedelta(minutes=5), now + timedelta(minutes=9), facility=f)
+    table = FakeTable([to_item(later), to_item(gone), to_item(cancel_of(gone, "01CANC", now)), {"pk": "01BAD", "type": "burst"}])
+    code, _ = cli(["list", "--json"], table=table)
+    captured = capsys.readouterr()
+    rows = {r["id"]: r for r in map(json.loads, captured.out.splitlines())}
+    assert code == 0 and "01BAD" in captured.err
+    assert rows["01LATE"]["state"] == "scheduled" and rows["01LATE"]["cancelled"] is False
+    assert rows["01GONE"]["state"] == "cancelled" and rows["01GONE"]["cancelled"] is True
+
+
+@pytest.mark.parametrize("value", ["-1", "1e12", "nan"])
+def test_list_recent_min_out_of_range(value, capsys):
+    code, _ = cli(["list", "--recent-min", value])
+    assert code == 2 and "--recent-min" in capsys.readouterr().err
+
+
+def test_list_aws_error(capsys):
+    class Broken(FakeTable):
+        def scan(self, **kwargs):
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Scan")
+
+    code, _ = cli(["list"], table=Broken())
+    assert code == 2 and "AWS call failed" in capsys.readouterr().err

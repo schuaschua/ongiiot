@@ -61,7 +61,7 @@ class FakeSiteWise:
 
 
 class FakeTable:
-    """DynamoDB resource Table subset: scan, get_item, put_item (conditional)."""
+    """DynamoDB resource Table subset: scan, get_item, put_item and update_item (conditional)."""
 
     def __init__(self, items=(), page_size: int | None = None):
         self.items: dict[str, dict] = {i["pk"]: copy.deepcopy(i) for i in items}
@@ -70,6 +70,8 @@ class FakeTable:
         self.writes = 0
         self.fail_scans = 0  # the next N scans raise
         self.fail_puts = 0  # the next N puts raise
+        self.fail_updates = 0  # the next N updates raise
+        self.updates: list[dict] = []  # every update_item call's kwargs
 
     def _maybe_fail(self, attr: str) -> None:
         if getattr(self, attr):
@@ -99,6 +101,21 @@ class FakeTable:
             raise FakeClientError("ConditionalCheckFailedException", "exists")
         self.writes += 1
         self.items[Item["pk"]] = copy.deepcopy(Item)
+
+
+    def update_item(self, Key, UpdateExpression, ConditionExpression, ExpressionAttributeValues):
+        """Only ``SET <attr> = :e`` guarded by ``attribute_exists(pk) AND attribute_not_exists(<attr>)``."""
+        self.updates.append(
+            {"Key": Key, "UpdateExpression": UpdateExpression, "ConditionExpression": ConditionExpression}
+        )
+        self._maybe_fail("fail_updates")
+        attr = UpdateExpression.removeprefix("SET ").split(" = ")[0]
+        assert ConditionExpression == f"attribute_exists(pk) AND attribute_not_exists({attr})"
+        item = self.items.get(Key["pk"])
+        if item is None or attr in item:
+            raise FakeClientError("ConditionalCheckFailedException", "condition")
+        self.writes += 1
+        item[attr] = ExpressionAttributeValues[":e"]
 
 
 class FakeClock:

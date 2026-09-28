@@ -339,3 +339,60 @@ def test_json_log_reserved_keys_win():
     line = json.loads(fmt.format(rec))
     assert (line["msg"], line["level"], line["stage"], line["config_hash"]) == ("real", "INFO", STAGE, "h")
     assert line["ts"] != "x" and line["pipe_id"] == "P-007"
+
+
+# -- effective_end on injection_log (Story 4.1) ------------------------------------------
+
+
+def test_cancel_after_apply_sets_effective_end_once():
+    inj = leak()
+    sim, _, ctrl, log, clock = make(control=[inj])
+    sim.run(max_ticks=3)
+    assert "01LEAK" in log.items and "effective_end" not in log.items["01LEAK"]
+    stop = datetime.fromtimestamp(T0 + 3, UTC)
+    ctrl.items["01CANC"] = to_item(cancel_of(inj, "01CANC", stop))
+    sim.run(max_ticks=15)
+    row = log.items["01LEAK"]
+    assert row["effective_end"] == to_item(cancel_of(inj, "x", stop))["end_at"]
+    assert row["end_at"] == to_item(inj)["end_at"]  # planned end unchanged
+    assert len(log.updates) == 1  # once, not on every poll
+
+
+def test_effective_end_conditional_failure_retries_within_grace_then_gives_up():
+    inj = leak()
+    stop = datetime.fromtimestamp(T0 + 3, UTC)
+    row = {"pk": "01LEAK", "effective_end": "already"}
+    from sim.control import ControlPoller
+
+    log = FakeTable([row])
+    poller = ControlPoller(FakeTable([to_item(inj), to_item(cancel_of(inj, "01CANC", stop))]), log, F)
+    for t in range(T0 + 5, T0 + 30, 5):
+        poller.poll(t)
+    assert len(log.updates) == 5 and log.items["01LEAK"]["effective_end"] == "already"  # retried each poll
+    poller.poll(T0 + 3 + 601)  # past the 10-minute grace: last attempt, then given up
+    poller.poll(T0 + 3 + 700)
+    assert len(log.updates) == 6
+
+
+def test_effective_end_generic_error_retries_then_succeeds():
+    inj = leak()
+    sim, _, ctrl, log, _ = make(control=[inj])
+    sim.run(max_ticks=3)
+    ctrl.items["01CANC"] = to_item(cancel_of(inj, "01CANC", datetime.fromtimestamp(T0 + 3, UTC)))
+    log.fail_updates = 1
+    sim.run(max_ticks=15)
+    assert len(log.updates) == 2 and "effective_end" in log.items["01LEAK"]
+
+
+def test_effective_end_older_than_a_day_is_skipped():
+    inj = leak(start=T0 - 2 * 86400)
+    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", datetime.fromtimestamp(T0 - 2 * 86400 + 60, UTC))])
+    sim.run(max_ticks=10)
+    assert log.updates == []
+
+
+def test_cancel_before_apply_writes_no_log_row():
+    inj = leak(start=T0 + 60)
+    sim, _, _, log, _ = make(control=[inj, cancel_of(inj, "01CANC", datetime.fromtimestamp(T0, UTC))])
+    sim.run(max_ticks=10)
+    assert log.items == {}

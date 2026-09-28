@@ -108,9 +108,16 @@ def test_task_role_is_exactly_ad17(synthesized):
     assert "ManagedPolicyArns" not in role and "Policies" not in role
 
     statements = policy_statements(tpl, task_role)
-    assert all(s["Effect"] == "Allow" and "Condition" not in s for s in statements)
+    assert all(s["Effect"] == "Allow" for s in statements)
+    conditioned = [s for s in statements if "Condition" in s]
+    assert [as_list(s["Action"]) for s in conditioned] == [["dynamodb:UpdateItem"]]
+    assert conditioned[0]["Condition"] == {
+        "ForAllValues:StringEquals": {"dynamodb:Attributes": ["pk", "effective_end"]},
+        "StringEqualsIfExists": {"dynamodb:ReturnValues": "NONE"},
+        "Null": {"dynamodb:Attributes": "false"},
+    }
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
-    assert len(grants) == len(statements) == 3
+    assert len(grants) == len(statements) == 4
 
     sw = grants[("iotsitewise:BatchPutAssetPropertyValue", "iotsitewise:DescribeTimeSeries")]
     # Cross-stack references to exactly this stage's pipe asset ARNs.
@@ -129,6 +136,7 @@ def test_task_role_is_exactly_ad17(synthesized):
     log = table_id(tpl, f"injection-log-{stage}")
     assert grants[("dynamodb:Scan",)] == [{"Fn::GetAtt": [control, "Arn"]}]
     assert grants[("dynamodb:PutItem",)] == [{"Fn::GetAtt": [log, "Arn"]}]
+    assert grants[("dynamodb:UpdateItem",)] == [{"Fn::GetAtt": [log, "Arn"]}]
 
 
 def test_execution_role_only_pulls_and_logs(synthesized):
