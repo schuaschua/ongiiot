@@ -66,7 +66,7 @@ def runtime(facility, fake, strategy="batch_get", db=None):
         pipes=handler.pipe_metas(facility),
         dq_targets=handler.dq_aliases(facility),
         reader=make_reader(strategy, fake),
-        writer=DerivedWriter(fake, allowed=handler.derived_targets(facility)),
+        writer=DerivedWriter(fake, allowed=handler.derived_targets(facility), types=handler.derived_types(facility)),
         incidents=Incidents(db if db is not None else FakeDynamoDB(TABLE), TABLE),
         alert_targets=handler.alert_aliases(facility),
     )
@@ -699,8 +699,8 @@ def test_untrusted_flow_out_blocks_only_the_mass_balance(facility):
     assert written(facility, fake)[("P-007", "flow_out")] == (0.0, "dq_flatline")
     assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [("leak_methane_rise", "P-007"), ("outlier_peer", "P-007")]
     assert summary["suppressed"] == [
-        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)"},
-        {"detector": "outlier_peer", "pipe": "P-007", "reason": "flow_ratio skipped: flow_out untrusted (dq 0.00 < dq_min 0.5)"},
+        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)", "scope": "detector"},
+        {"detector": "outlier_peer", "pipe": "P-007", "reason": "flow_ratio skipped: flow_out untrusted (dq 0.00 < dq_min 0.5)", "scope": "feature"},
     ]
     # The outlier check still scores the other features, and says which one it skipped.
     (op,) = [f for f in summary["findings"] if f["detector"] == "outlier_peer"]

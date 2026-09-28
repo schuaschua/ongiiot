@@ -25,6 +25,7 @@ No I/O here: the adapter (``detect/adapters/incidents.py``) reads and writes the
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -79,11 +80,11 @@ class Decision:
 def check_tunables(t: Tunables) -> None:
     """Raise ``ValueError`` unless ``quiet_runs_to_close`` (int >= 1) and ``reopen_grace_s`` (number >= 0) are valid."""
     q = t.get("quiet_runs_to_close")
-    if isinstance(q, bool) or not isinstance(q, int) or q < 1:
+    if isinstance(q, bool) or not isinstance(q, int) or q < 1:  # an int is always finite
         raise ValueError(f"tunables.quiet_runs_to_close must be an integer >= 1, got {q!r}")
     g = t.get("reopen_grace_s")
-    if isinstance(g, bool) or not isinstance(g, (int, float)) or g < 0:
-        raise ValueError(f"tunables.reopen_grace_s must be a number >= 0, got {g!r}")
+    if isinstance(g, bool) or not isinstance(g, (int, float)) or not math.isfinite(g) or g < 0:
+        raise ValueError(f"tunables.reopen_grace_s must be a finite number >= 0, got {g!r}")
 
 
 def _upserts(findings: Iterable[Finding]) -> dict[str, Finding]:
@@ -153,6 +154,8 @@ def decide(
             quiet_runs=0,
         )
     detectors = dict(sorted(detectors.items()))
+    if not detectors:  # a stored OPEN item without detectors: nothing can keep it open
+        return Decision("close", replace(base, status=CLOSED, closed_at=now, closed_reason=QUIET))
     aliases = tuple(sorted(set(base.evidence_aliases) | {a for f in own for a in f.evidence_aliases}))
     evidence_to = max([base.evidence_to, *(f.window_end for f in own)])
     incident = replace(
@@ -187,7 +190,8 @@ def alert_state(incident: Incident | None) -> int:
 
 def alert_summary(incident: Incident | None, max_bytes: int = ALERT_SUMMARY_MAX_BYTES) -> str:
     """Compact JSON ``{"incident_id","confidence","detectors":[{"id","c"}],"evidence":[alias]}`` or ``{}``,
-    at most ``max_bytes`` UTF-8 bytes: ``evidence`` is dropped first, then trailing detectors."""
+    at most ``max_bytes`` UTF-8 bytes: ``evidence`` is dropped first, then trailing detectors; ``{}`` if even
+    that does not fit."""
     if incident is None or incident.status != OPEN:
         return "{}"
     doc = {
@@ -206,4 +210,5 @@ def alert_summary(incident: Incident | None, max_bytes: int = ALERT_SUMMARY_MAX_
     del doc["evidence"]
     while len(dump(doc).encode()) > max_bytes and doc["detectors"]:
         doc["detectors"] = doc["detectors"][:-1]
-    return dump(doc)
+    out = dump(doc)
+    return out if len(out.encode()) <= max_bytes else "{}"

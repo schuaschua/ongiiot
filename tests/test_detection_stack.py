@@ -10,7 +10,7 @@ from aws_cdk.assertions import Template
 
 from infra.app import build_app
 from infra.stacks import detection, simulator
-from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, TRANSACT_ACTIONS, schedule_state
+from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, schedule_state
 
 
 def synth(stage: str, **context: str):
@@ -65,6 +65,8 @@ def test_incidents_table(synthesized):
     assert p["AttributeDefinitions"] == [{"AttributeName": "pk", "AttributeType": "S"}, {"AttributeName": "sk", "AttributeType": "S"}]
     assert p["BillingMode"] == "PAY_PER_REQUEST"
     assert "StreamSpecification" not in p  # AD-7: no stream on incidents
+    pitr = p.get("PointInTimeRecoverySpecification", {}).get("PointInTimeRecoveryEnabled", False)
+    assert pitr is (stage == "poc")
     policy = "Retain" if stage == "poc" else "Delete"
     assert t["DeletionPolicy"] == t["UpdateReplacePolicy"] == policy
     assert tpl["Outputs"]["IncidentsTableName"]["Value"] == {"Ref": tid}
@@ -135,7 +137,7 @@ def test_function_role_is_exactly_ad17(synthesized):
     statements = policy_statements(tpl, role_id)
     assert all(s["Effect"] == "Allow" and "Condition" not in s for s in statements)
     grants = {tuple(sorted(as_list(s["Action"]))): as_list(s["Resource"]) for s in statements}
-    assert len(grants) == len(statements) == 5
+    assert len(grants) == len(statements) == 4
 
     assert grants[tuple(sorted(SITEWISE_READ_ACTIONS))] == ["*"]
     assert set(SITEWISE_READ_ACTIONS) == {
@@ -162,14 +164,13 @@ def test_function_role_is_exactly_ad17(synthesized):
     table = [{"Fn::GetAtt": [table_id(tpl), "Arn"]}]
     assert grants[tuple(sorted(INCIDENT_ACTIONS))] == table
     assert sorted(INCIDENT_ACTIONS) == sorted(
-        ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:Query"]
+        ["dynamodb:Query", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:TransactWriteItems"]
     )
-    assert grants[tuple(TRANSACT_ACTIONS)] == table and TRANSACT_ACTIONS == ["dynamodb:TransactWriteItems"]
 
     # AD-4: nothing on sim_control, injection_log or any other service.
     actions = {a for s in statements for a in as_list(s["Action"])}
     dynamo = [s for s in statements if any(a.startswith("dynamodb:") for a in as_list(s["Action"]))]
-    assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 2
+    assert all(as_list(s["Resource"]) == table for s in dynamo) and len(dynamo) == 1
     assert {a.split(":")[0] for a in actions} == {"iotsitewise", "logs", "dynamodb"}
 
 

@@ -4,8 +4,11 @@
   before any API call. IAM cannot scope writes by alias, so this guard is the raw/derived boundary.
 - Every value of one ``write`` carries the same timestamp (the run's ``window_end``), so a replayed
   run overwrites identically (AD-9).
-- ``float`` values go out as ``doubleValue``, ``int`` values as ``integerValue`` (32-bit signed, for
-  INTEGER properties such as ``alert_state``), ``str`` values as ``stringValue``. ``bool`` is refused.
+- The value variant comes from the property's SiteWise data type (``types``: alias -> ``DOUBLE`` |
+  ``INTEGER`` | ``STRING``, from the facility's derived properties), never from the Python type:
+  DOUBLE takes a finite number (sent as ``doubleValue``), INTEGER an ``int`` in the 32-bit signed range
+  (``integerValue``), STRING a ``str`` (``stringValue``). ``bool`` is always refused. An alias without a
+  declared type is DOUBLE, or STRING for a ``str`` value (never INTEGER).
 - Requests of at most 10 entries, one value each. Throttling and transient errors are retried a
   few times; anything else raises ``WriteError`` (an adapter failure fails the invocation).
 """
@@ -54,16 +57,27 @@ def check_derived_alias(alias: str, allowed: frozenset[str] | None = None) -> No
 INT_MIN, INT_MAX = -(2**31), 2**31 - 1
 
 
-def _variant(alias: str, value: Any) -> dict[str, Any]:
-    if isinstance(value, str):
+DATA_TYPES = frozenset({"DOUBLE", "INTEGER", "STRING"})
+
+
+def _variant(alias: str, value: Any, data_type: str | None = None) -> dict[str, Any]:
+    if data_type is None:
+        data_type = "STRING" if isinstance(value, str) else "DOUBLE"
+    if isinstance(value, bool):
+        raise ValueError(f"{alias}: bool is not a valid {data_type} value")
+    if data_type == "STRING":
+        if not isinstance(value, str):
+            raise ValueError(f"{alias}: STRING property needs a str, got {value!r}")
         return {"stringValue": value}
-    if isinstance(value, int) and not isinstance(value, bool):
-        if not INT_MIN <= value <= INT_MAX:
-            raise ValueError(f"{alias}: integer out of range, got {value!r}")
+    if data_type == "INTEGER":
+        if not isinstance(value, int) or not INT_MIN <= value <= INT_MAX:
+            raise ValueError(f"{alias}: INTEGER property needs a 32-bit int, got {value!r}")
         return {"integerValue": value}
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ValueError(f"{alias}: value must be a finite number or a string, got {value!r}")
-    return {"doubleValue": float(value)}
+    if data_type == "DOUBLE":
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{alias}: DOUBLE property needs a finite number, got {value!r}")
+        return {"doubleValue": float(value)}
+    raise ValueError(f"{alias}: unknown data type {data_type!r}")
 
 
 def _timestamp(t: datetime) -> dict[str, int]:
@@ -87,12 +101,17 @@ class DerivedWriter:
         allowed: Iterable[str] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         max_attempts: int = MAX_ATTEMPTS,
+        types: Mapping[str, str] | None = None,
     ):
         self._client = client
         self._allowed = frozenset(allowed) if allowed is not None else None
         if self._allowed is not None:
             for a in self._allowed:
                 check_derived_alias(a)
+        self._types = dict(types or {})
+        bad = {t for t in self._types.values() if t not in DATA_TYPES}
+        if bad:
+            raise ValueError(f"unknown data types {sorted(bad)}")
         self._sleep = sleep
         self._max_attempts = max_attempts
 
@@ -106,7 +125,7 @@ class DerivedWriter:
             {
                 "entryId": f"e{i}",
                 "propertyAlias": alias,
-                "propertyValues": [{"value": _variant(alias, v), "timestamp": ts, "quality": "GOOD"}],
+                "propertyValues": [{"value": _variant(alias, v, self._types.get(alias)), "timestamp": ts, "quality": "GOOD"}],
             }
             for i, (alias, v) in enumerate(sorted(values.items()))
         ]

@@ -38,7 +38,6 @@ from detect.core.models import Finding, Tunables
 
 OPEN_SK = "OPEN"
 CLOSED_PREFIX = "C#"
-CONFLICT_CODES = frozenset({"ConditionalCheckFailedException", "TransactionCanceledException"})
 OPS = ("opened", "updated", "closed", "reopened")
 _OP_KEY = {"open": "opened", "update": "updated", "close": "closed", "reopen": "reopened"}
 
@@ -47,7 +46,9 @@ _de = TypeDeserializer()
 
 
 def iso(t: datetime) -> str:
-    """``YYYY-MM-DDTHH:MM:SS.sssZ`` (AD-9 stored strings)."""
+    """``YYYY-MM-DDTHH:MM:SS.sssZ`` (AD-9 stored strings); a naive ``datetime`` is refused."""
+    if t.tzinfo is None or t.utcoffset() is None:
+        raise ValueError(f"datetime must be tz-aware, got {t!r}")
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 1000:03d}Z"
 
 
@@ -144,6 +145,18 @@ def _error_code(exc: BaseException) -> str | None:
     return None
 
 
+def is_conflict(exc: BaseException) -> bool:
+    """A conditional failure: ``ConditionalCheckFailedException``, or a cancelled transaction with at least
+    one ``ConditionalCheckFailed`` reason (other cancellations, e.g. throttling, are real errors)."""
+    code = _error_code(exc)
+    if code == "ConditionalCheckFailedException":
+        return True
+    if code == "TransactionCanceledException":
+        response = getattr(exc, "response", {}) or {}
+        return any(r.get("Code") == "ConditionalCheckFailed" for r in response.get("CancellationReasons") or [])
+    return False
+
+
 def default_new_id(now: datetime) -> str:
     from ulid import ULID
 
@@ -161,6 +174,8 @@ class PipeState:
 class ApplyResult:
     open: dict[str, Incident | None]  # pipe_id -> OPEN incident after the run (or None)
     ops: dict[str, list[dict[str, str]]] = field(default_factory=lambda: {k: [] for k in OPS})
+    replayed: set[str] = field(default_factory=set)  # pipes the replay guard left untouched
+    conflicts: list[str] = field(default_factory=list)  # pipes left to the next run after a second conflict
 
 
 class Incidents:
@@ -241,6 +256,7 @@ class Incidents:
         for attempt in (1, 2):
             state = self.read(pipe_id)
             if state.max_last_run is not None and state.max_last_run >= run_id:
+                result.replayed.add(pipe_id)
                 return state.open  # AD-12: this run (or a later one) already wrote this pipe
             decision = rules.decide(
                 pipe_id=pipe_id,
@@ -258,9 +274,9 @@ class Incidents:
             try:
                 self._write(decision, run_id, config_hash)
             except Exception as exc:
-                code = _error_code(exc)
-                if code not in CONFLICT_CODES:
+                if not is_conflict(exc):
                     raise
+                code = _error_code(exc)
                 if attempt == 1:
                     continue
                 self._log(
@@ -268,6 +284,7 @@ class Incidents:
                         {"run_id": run_id, "pipe_id": pipe_id, "level": "WARNING", "error": f"incident write conflict ({code}); left to the next run"}
                     )
                 )
+                result.conflicts.append(pipe_id)
                 return self.read(pipe_id).open
             inc = decision.incident
             assert inc is not None

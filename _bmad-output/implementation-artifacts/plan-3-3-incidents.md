@@ -3,12 +3,12 @@ title: 'Story 3.3: Group findings into one explainable incident per pipe'
 type: 'feature'
 ticket: 'OG-16'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: '801214a4e197c4dac813d4b2d11992fa06ed2d87'
 context:
@@ -109,7 +109,35 @@ After the incident updates, each run writes `alert_state` and `alert_summary` fo
 
 ## Plan Change Log
 
+- 2026-09-29, review fixes (orchestrator decision + review findings):
+  - Source-outage guard (orchestrator decision): when >= 50% of raw aliases have no samples, `dq_gap` findings do not feed incidents and no detector counts quiet; `source outage` log line and `source_outage` in the summary; dq values still written.
+  - `suppressed` entries carry `scope` (`detector` | `feature`); only `detector` scope blocks quiet counting. Pass-2-skipped runs: pass-1 detectors in `ran_ok` still count quiet.
+  - Replay guard also skips that pipe's alert writes; `incident_conflicts` in the summary.
+  - `DerivedWriter` takes the data type from the facility's derived properties (`types`), not the Python type.
+  - `TransactionCanceledException` is a conflict only with a `ConditionalCheckFailed` reason.
+  - Empty detectors map closes quiet; tunables must be finite; `alert_summary` falls back to `{}`; `iso()` refuses naive datetimes.
+  - Grants reduced to Query, PutItem, DeleteItem, TransactWriteItems (one statement); PITR on the `poc` incidents table only.
+
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 2, medium 9, low 12, false 0. Outcome: 12 patch groups plus the orchestrator's source-outage guard, 1 deferral, no loopback.
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| orchestrator | Every simulator start opens 24 `dq_gap` incidents | high | patch (decision) | Source-outage guard: ≥ 50% of aliases silent → no `dq_gap` into incidents, no quiet counting. |
+| BH-2 | A per-feature skip blocks `outlier_peer` quiet counting forever | high | patch | Scoped suppression entries. |
+| BH-3, IA-3 | Pass-2 skip also blocks pass-1 quiet counting | medium | patch | Only failed and pass-2 detectors lose credit. |
+| BH-1, ECH-1, IA-2 | Replay rewrites historical alert values from the current state | medium | patch | Skip alert writes on replay; docs fixed. |
+| BH-5 | `int` inferred as INTEGER | medium | patch | Type taken from the property's data type. |
+| BH-10, ECH-3 | Every transaction cancellation treated as a conflict | medium | patch | Check `CancellationReasons`. |
+| BH-9 | Conflicts invisible in the summary | low | patch | `incident_conflicts`. |
+| ECH-2, ECH-5, ECH-6, BH-12 | Empty detectors map crashes `max()`; NaN grace; summary over the cap; naive datetime | medium | patch | Guards. |
+| BH-6 | IAM grants broader than used | medium | patch | Exact grants (AD-17). |
+| BH-7 | No PITR on the `poc` table | low | patch | PITR for `poc`; TTL for history deferred. |
+| VG-1, VG-2, BH-13 | Paging and transaction races untested | medium | patch | Tests. |
+| BH-8, BH-11, ECH-4 | Docs `grep` broken; partial-failure ordering undocumented | low | patch (doc) | `jq`; run order and recovery documented. |
+| BH-4 | Reopen keeps stale detectors; no confidence decay | low | reject (doc) | AD-6 semantics (max over detectors, restore on reopen); documented. |
+| BH-7b | No TTL or archive for closed history | low | defer | Grows slowly at POC scale. |
 
 ## Verification
 

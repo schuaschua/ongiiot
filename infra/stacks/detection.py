@@ -11,8 +11,9 @@
   writes are authorised against the time series; IAM cannot scope by alias, so ``derived_writer.py``
   is the raw/derived boundary). Nothing on ``sim_control`` or ``injection_log`` (AD-4).
 - ``incidents-<stage>`` table (Story 3.3; AD-6): keys ``pk``/``sk`` (S), on demand, retained for ``poc``,
-  destroyed for developer stages. The function role gets exactly ``INCIDENT_ACTIONS`` on that table and
-  ``dynamodb:TransactWriteItems`` scoped to it; its name reaches the Lambda as ``INCIDENTS_TABLE``.
+  destroyed for developer stages, point-in-time recovery on ``poc`` only. The function role gets exactly
+  ``INCIDENT_ACTIONS`` (Query, PutItem, DeleteItem, TransactWriteItems) in one statement on that table; its
+  name reaches the Lambda as ``INCIDENTS_TABLE``.
   The simulator role gets nothing on it (AD-17).
 """
 
@@ -52,14 +53,13 @@ SITEWISE_READ_ACTIONS = [
     "iotsitewise:List*",
 ]
 
+# Exactly what detect/adapters/incidents.py calls (one statement, the incidents table only).
 INCIDENT_ACTIONS = [
-    "dynamodb:GetItem",
-    "dynamodb:PutItem",
-    "dynamodb:UpdateItem",
-    "dynamodb:DeleteItem",
     "dynamodb:Query",
+    "dynamodb:PutItem",
+    "dynamodb:DeleteItem",
+    "dynamodb:TransactWriteItems",
 ]
-TRANSACT_ACTIONS = ["dynamodb:TransactWriteItems"]
 
 
 def schedule_state(value: object) -> str:
@@ -99,6 +99,9 @@ class DetectionStack(cdk.Stack):
             sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=removal,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=stage == "poc"
+            ),
         )
 
         # AD-17: exactly these grants, nothing else.
@@ -119,9 +122,6 @@ class DetectionStack(cdk.Stack):
         )
         self.role.add_to_policy(
             iam.PolicyStatement(actions=INCIDENT_ACTIONS, resources=[self.incidents_table.table_arn])
-        )
-        self.role.add_to_policy(
-            iam.PolicyStatement(actions=TRANSACT_ACTIONS, resources=[self.incidents_table.table_arn])
         )
         self.role.add_to_policy(
             iam.PolicyStatement(
