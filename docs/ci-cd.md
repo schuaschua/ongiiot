@@ -153,15 +153,24 @@ Pass 1 runs these checks (`detect/core/detectors/`, tunables under `tunables.det
 | --- | --- | --- |
 | `dq_flatline` | the sensor is railed: its latest GOOD samples all sit at or beyond the same contract limit, within `rel_tol` (1e-6) x contract span of `min` or `max` (over- and under-range values count) | `0` below `min_run_s` (30 s), then `run / full_s` (60 s), capped at 1 |
 | `dq_stuck` | the sensor is frozen: its latest GOOD samples repeat exactly the same value, and that value is not railed (a railed run is only `dq_flatline`) | same rule, `min_run_s` 30 s, `full_s` 60 s |
+| `dq_drift` | the sensor walks away from its peers: its residual (value minus the median of the same measurement on the other pipes of its `peer_group`, second by second) follows a straight line over the last `fit_s` (300 s) whose slope is at least `min_rate` (5e-4 of contract span per minute, 0.175 K/min for a 50–400 K temperature) and that explains at least `min_r2` (0.97) of the residual's variance. Needs at least 2 peers with data and `min_points` (150) residual points | `0` below `min_rate` or `min_r2`, then `rate / full_rate` (1e-3 of span per minute), capped at 1 |
+| `dq_gap` | the sensor has gone silent: no GOOD sample for the last `silence_s` of the window (the whole window when it has none, which covers the "no samples" rule) | `0` below `min_gap_s` (30 s), then `silence_s / full_gap_s` (60 s), capped at 1 |
 
-Both look only at the run of GOOD samples ending at the sensor's last GOOD sample in the window, so a sensor that starts varying again clears on the next run. A BAD, UNCERTAIN or valueless sample ends the run, and so does a gap longer than two sample periods (from the contract `rate_hz`, 2 s at 1 Hz). A run of 45 s scores confidence 0.75, so `_dq = 0.25`; a run of 60 s or more scores `_dq = 0.0`. Until Story 2.3 adds `dq_drift` and `dq_gap` as checks, a sensor whose samples are all BAD or UNCERTAIN still scores `1.0`.
+`dq_flatline` and `dq_stuck` look only at the run of GOOD samples ending at the sensor's last GOOD sample in the window, so a sensor that starts varying again clears on the next run. A BAD, UNCERTAIN or valueless sample ends the run, and so does a gap longer than two sample periods (from the contract `rate_hz`, 2 s at 1 Hz). A run of 45 s scores confidence 0.75, so `_dq = 0.25`; a run of 60 s or more scores `_dq = 0.0`.
 
-**A flag appears 2 to 3 minutes after a fault starts**, because each window ends `ingest_lag_s` (60 s) behind real time, the fault then needs 60 s inside the window for full confidence, and runs start on the minute. It clears the same way, 1 to 2 minutes after the sensor recovers.
+`dq_gap` looks only at the trailing silence, so an earlier gap with data since gives no flag, and a sensor whose samples are all BAD or UNCERTAIN scores `0.0` / `dq_gap`. A sensor with no samples at all gets exactly one `dq_gap` finding: from the detector, or from the no-sample rule in `dq_score.py` if the detector failed. `dq_drift` compares a sensor with its peers, so a change shared by the whole peer group (a process change) is not drift, and neither is a step such as a leak (a step never fits a line that well).
+
+**A `dq_flatline`, `dq_stuck` or `dq_gap` flag appears 2 to 3 minutes after a fault starts**, because each window ends `ingest_lag_s` (60 s) behind real time, the fault then needs more than 30 s inside the window to push `_dq` below 0.5 (60 s for `_dq = 0.0`), and runs start on the minute. It clears the same way, 1 to 2 minutes after the sensor recovers. Normal ingest lag never raises `dq_gap`: at 1 Hz the last sample sits 1 s before the window end, and data can arrive up to about 85 s late (60 s lag plus 30 s `min_gap_s`, less the simulator's 5 s flush) before any flag.
+
+**A `dq_drift` flag at 0.5 K/min on a temperature appears 5 to 6 minutes after the drift starts** (4 to 5 minutes of drift in the window, plus the 60 s lag) and then stays at `_dq = 0.0` while the drift lasts. It clears 1 to 2 minutes after the drift stops (in the simulator the offset disappears when the injection ends, and a step is not a line).
 
 Known limits:
 
 - A sensor legitimately sitting at a contract limit, such as a shut-in pipe reading flow `0`, is flagged `dq_flatline`. The check cannot tell a real zero from a railed transmitter.
 - `dq_stuck` assumes non-quantized readings. A sensor that reports in coarse steps (for example whole degrees) and holds steady can repeat an exact value for a minute and be flagged.
+- `dq_drift` only sees drift that is clearly steadier than normal process wander. The simulator's flows and pressures wander by up to about 8e-3 of span per minute over 5 minutes (each pipe has its own process disturbance), so the check relies on `min_r2` to ignore them, and a slow drift on those sensors is found only when it is a clean line. On a 50–400 K temperature, drift below about 0.3 K/min over 5 minutes does not reach `min_r2` (0.25 K/min fits with R² 0.965) and is not flagged.
+- `dq_drift` needs at least 2 peers with data. In a peer group of 3 pipes (AD-14 requires at least 4) the median of 2 peers includes the drifting sensor, so its peers could be flagged too.
+- `dq_drift` flags drift while it is happening, not a standing offset: a real sensor that drifted and then stopped keeps its offset but clears once the fit no longer holds a line.
 
 To try the checks on a developer stage with the simulator on (section 5), inject a fault on each sensor:
 
@@ -191,6 +200,15 @@ uv run python -m ops.inject cancel <pk of the dq_stuck item>
 ```
 
 The simulator's `dq_flatline` holds the contract minimum; `dq_stuck` repeats the last value with GOOD quality.
+
+To try `dq_drift` and `dq_gap`, inject a drift and a silence, then read the sensors back with the same loop (P-010 is in `train1`, P-020 in `train2`):
+
+```bash
+uv run python -m ops.inject dq_drift --pipe P-010 --measurement temperature --minutes 15 --per-min 0.5   # note its "pk"
+uv run python -m ops.inject dq_gap --pipe P-020 --measurement flow_out --minutes 3                        # note this "pk" too
+```
+
+`flow_out_dq` on P-020 reads `0.0` / `dq_gap` from about 2 minutes after the gap starts until 1 to 2 minutes after it ends (it ends by itself after 3 minutes). `temperature_dq` on P-010 reads `0.0` / `dq_drift` from about 5 to 6 minutes after the drift starts. Other sensors stay `1.0` / `""`. Cancel the drift when done; it clears 1 to 2 minutes later.
 
 The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 

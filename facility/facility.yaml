@@ -200,5 +200,5 @@ tunables:
     outlier_peer: {}
     dq_flatline: {min_run_s: 30, full_s: 60, rel_tol: 1.0e-6}   # railed within rel_tol x contract span
     dq_stuck: {min_run_s: 30, full_s: 60}                       # exactly repeated, not railed
-    dq_drift: {}
-    dq_gap: {}
+    dq_drift: {fit_s: 300, min_points: 150, min_rate: 5.0e-4, full_rate: 1.0e-3, min_r2: 0.97}  # residual vs peer median; rate in span/min
+    dq_gap: {min_gap_s: 30, full_gap_s: 60}                     # trailing silence (no GOOD samples) at window end

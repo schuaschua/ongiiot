@@ -1,5 +1,5 @@
-"""Full detection runs with fakes: the "Normal run", "No data" and "Replay" rows (Story 2.1), and
-railed and stuck sensors end to end (Story 2.2)."""
+"""Full detection runs with fakes: the "Normal run", "No data" and "Replay" rows (Story 2.1),
+railed and stuck sensors end to end (Story 2.2), and drifting and silent sensors end to end (Story 2.3)."""
 
 from __future__ import annotations
 
@@ -277,11 +277,17 @@ def test_pipe_metas_match_the_model(facility):
 # -- Story 2.2: dq_flatline and dq_stuck registered in pass 1 ------------------------------------
 
 
-def test_pass1_registers_flatline_and_stuck():
-    assert [(d.id, d.kind) for d in handler.PASS1_DETECTORS] == [("dq_flatline", "pipe"), ("dq_stuck", "pipe")]
-    from detect.core.models import PipeDetector
+def test_pass1_registers_the_dq_detectors():
+    assert [(d.id, d.kind) for d in handler.PASS1_DETECTORS] == [
+        ("dq_flatline", "pipe"),
+        ("dq_stuck", "pipe"),
+        ("dq_drift", "facility"),
+        ("dq_gap", "pipe"),
+    ]
+    from detect.core.models import FacilityDetector, PipeDetector
 
-    assert all(isinstance(d, PipeDetector) for d in handler.PASS1_DETECTORS)  # structural: id, version, kind, detect
+    for d in handler.PASS1_DETECTORS:  # structural: id, version, kind, detect
+        assert isinstance(d, FacilityDetector if d.kind == "facility" else PipeDetector)
 
 
 def test_railed_and_stuck_sensors_end_to_end(facility):
@@ -299,8 +305,8 @@ def test_railed_and_stuck_sensors_end_to_end(facility):
     assert values[("P-015", "temperature")] == (0.0, "dq_stuck")
     others = {k: v for k, v in values.items() if k not in {("P-003", "flow_in"), ("P-015", "temperature")}}
     assert len(others) == 142 and set(others.values()) == {(1.0, "")}
-    assert summary["ran_ok"] == ["dq_flatline", "dq_stuck"]
-    assert summary["detectors"] == {"dq_flatline": "1", "dq_stuck": "1"}
+    assert summary["ran_ok"] == ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap"]
+    assert summary["detectors"] == {"dq_flatline": "1", "dq_stuck": "1", "dq_drift": "1", "dq_gap": "1"}
     assert len(logs) == 1  # no detector errors
 
 
@@ -361,7 +367,23 @@ def _without(tunables, detector_id, key):
 
 @pytest.mark.parametrize(
     ("detector_id", "key"),
-    [("dq_flatline", "min_run_s"), ("dq_flatline", "full_s"), ("dq_flatline", "rel_tol"), ("dq_stuck", "min_run_s"), ("dq_stuck", "full_s"), ("dq_stuck", None)],
+    [
+        ("dq_flatline", "min_run_s"),
+        ("dq_flatline", "full_s"),
+        ("dq_flatline", "rel_tol"),
+        ("dq_stuck", "min_run_s"),
+        ("dq_stuck", "full_s"),
+        ("dq_stuck", None),
+        ("dq_drift", "fit_s"),
+        ("dq_drift", "min_points"),
+        ("dq_drift", "min_rate"),
+        ("dq_drift", "full_rate"),
+        ("dq_drift", "min_r2"),
+        ("dq_drift", None),
+        ("dq_gap", "min_gap_s"),
+        ("dq_gap", "full_gap_s"),
+        ("dq_gap", None),
+    ],
 )
 def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, detector_id, key):
     import dataclasses
@@ -385,6 +407,19 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("dq_flatline", {"rel_tol": 0.5}),  # would rail every in-range value
         ("dq_stuck", {"full_s": 900}),  # must be < window_len_s
         ("dq_flatline", {"min_run_s": 900, "full_s": 1000}),
+        ("dq_drift", {"fit_s": 0}),
+        ("dq_drift", {"fit_s": 901}),  # longer than the window
+        ("dq_drift", {"min_points": 2}),
+        ("dq_drift", {"min_rate": 2e-3}),  # above full_rate
+        ("dq_drift", {"min_rate": -1e-4}),
+        ("dq_drift", {"min_rate": 0, "full_rate": 0}),
+        ("dq_drift", {"min_r2": 1.5}),
+        ("dq_drift", {"min_r2": "0.9"}),
+        ("dq_gap", {"min_gap_s": 90}),  # above full_gap_s
+        ("dq_gap", {"min_gap_s": -1}),
+        ("dq_gap", {"full_gap_s": 0, "min_gap_s": 0}),
+        ("dq_gap", {"full_gap_s": 901}),
+        ("dq_gap", {"full_gap_s": float("nan")}),
     ],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
@@ -398,6 +433,14 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
     handler.check_detectors(handler.PASS1_DETECTORS, facility.tunables)
     assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
     assert dict(facility.tunables["detectors"]["dq_stuck"]) == {"min_run_s": 30, "full_s": 60}
+    assert dict(facility.tunables["detectors"]["dq_drift"]) == {
+        "fit_s": 300,
+        "min_points": 150,
+        "min_rate": 5.0e-4,
+        "full_rate": 1.0e-3,
+        "min_r2": 0.97,
+    }
+    assert dict(facility.tunables["detectors"]["dq_gap"]) == {"min_gap_s": 30, "full_gap_s": 60}
 
 
 def test_dq_stuck_cold_start_needs_dq_flatline_rel_tol(facility):
@@ -430,3 +473,45 @@ def test_pipe_detector_finding_for_another_pipe_is_skipped(facility):
     err = json.loads(logs[0])
     assert err["detector_id"] == "dq_fake" and p1.id in err["error"]
     assert set(written(facility, fake).values()) == {(1.0, "")}
+
+
+# -- Story 2.3: dq_drift and dq_gap ----------------------------------------------------------------
+
+
+def test_drifting_and_silent_sensors_end_to_end(facility):
+    """P-010 temperature drifts 0.5 K/min for the last 6 min of the window and P-020 flow_out is silent
+    for the last 3 min: both score `_dq` 0.0 with the named check; the other 142 sensors stay 1.0 / ""."""
+    store = live_store(facility)
+    end = int(END.timestamp())
+    drift_from, gap_from = end - 360, end - 180
+    drifting, silent = facility.alias("P-010", "temperature"), facility.alias("P-020", "flow_out")
+    store[drifting] = [(t, v + 0.5 * max(0, t - drift_from) / 60, q) for t, v, q in store[drifting]]
+    store[silent] = [(t, v, q) for t, v, q in store[silent] if not gap_from <= t < end + 60]
+    fake = FakeSiteWise(store, page=20000)
+    summary, logs = run(facility, fake)
+    values = written(facility, fake)
+    assert values[("P-010", "temperature")] == (0.0, "dq_drift")
+    assert values[("P-020", "flow_out")] == (0.0, "dq_gap")
+    others = {k: v for k, v in values.items() if k not in {("P-010", "temperature"), ("P-020", "flow_out")}}
+    assert len(others) == 142 and set(others.values()) == {(1.0, "")}
+    assert summary["ran_ok"] == ["dq_flatline", "dq_stuck", "dq_drift", "dq_gap"] and len(logs) == 1
+
+
+def test_empty_alias_gets_one_dq_gap_even_if_the_detector_fails(facility):
+    """The no-sample rule stays the fallback: a failed dq_gap detector still leaves 0.0 / dq_gap."""
+
+    class GapBoom:
+        id, version, kind = "dq_gap", "1", "pipe"
+
+        def detect(self, pw, t):
+            raise RuntimeError("boom")
+
+    store = live_store(facility)
+    silent = facility.alias("P-007", "flow_in")
+    store[silent] = []
+    fake = FakeSiteWise(store, page=20000)
+    summary, _ = run_with(facility, fake, [GapBoom()])
+    assert summary["ran_ok"] == []
+    values = written(facility, fake)
+    assert values[("P-007", "flow_in")] == (0.0, "dq_gap")
+    assert sum(v == (1.0, "") for v in values.values()) == 143
