@@ -3,12 +3,12 @@ title: 'Story 2.2: Flag flatlined and stuck sensors'
 type: 'feature'
 ticket: 'OG-11'
 created: '2026-09-29'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 baseline_revision: 'cc5ceca79af526f0896f61fddabb7aea807cf786'
 context:
@@ -106,9 +106,30 @@ context:
 - Shared helpers (good-sample filter, trailing run, confidence, tunables validation) live in `detect/core/detectors/_trailing.py`; detectors import types only from `detect/core/models.py`.
 - `tests/test_detect_handler.py`'s synthetic healthy store now varies every second (it was a constant `1.0`, which `dq_stuck` now rightly flags).
 
+- **After review (round 1):** a non-GOOD or valueless sample ends a run (trailing non-GOOD samples are skipped back to the last GOOD one); a gap over 2 x the contract sample period (2 s without a rate) splits a run; railed is one-sided (`<= min + tol`, `>= max - tol`), so over/under-range values count; `0 <= rel_tol < 0.5`; `min_run_s <= full_s < window_len_s`; `dq_stuck.check_tunables` also validates `dq_flatline.rel_tol`; duplicate detector ids fail the cold start; `check_tunables` is on both protocols; empty units are omitted from explanations.
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+**Pass 1 (review_loop_iteration 0).** Counts: high 0, medium 6, low 19, false 1. Outcome: 9 patch groups; no loopback; the timing question is resolved by an autonomous decision (see the overnight log).
+
+| Ids | Finding | Verdict | Route | Evidence / action |
+|-----|---------|---------|-------|-------------------|
+| BH-2, VG-o1, ECH-1 | `dq_stuck` depends on `dq_flatline.rel_tol` without validating it | medium | patch | Validated in `DqStuck.check_tunables`. |
+| ECH-2 | `rel_tol >= 0.5` marks every value railed | low | patch | Range check. |
+| BH-3, ECH-3 | `min_run_s`/`full_s` not checked against `window_len_s` | medium | patch | Cold-start cross-check. |
+| ECH-4, ECH-5 | Trailing run bridges non-GOOD stretches and long gaps | medium | patch | A non-GOOD sample ends the run; split where the gap exceeds 2× the sample period. |
+| BH-4 | Over- and under-range values are not "railed" | medium | patch | One-sided rail test. |
+| BH-8, ECH-8, BH-7 | Duplicate detector ids; protocols unused | low | patch | Cold-start id check; handler typed on the protocols. |
+| VG-1 | Pipe-id mismatch guard untested | medium | patch | Test added. |
+| BH-10 | Unit `None` in explanations | low | patch | Unit omitted when empty. |
+| BH-6, BH-10b, ECH-11, IA timing | Inverted doc sentence; incomplete manual test; timing claim | medium | patch (doc) + decision | Timing: two runs after the fault enters the window (AD-9 ingest lag); documented as 2–3 minutes. |
+| ECH-7, BH-5 | Legitimate shut-in at the contract min; quantized sensors flagged stuck | low | reject (doc) | Simulated data only; documented as a known limit. |
+| BH-9 | Finding window is not the run start | low | reject | The `Finding` v1 contract defines the window. |
+| BH-11 | Per-sample `rail_of` cost | low | reject | Negligible at 144 sensors. |
+| ECH-6, ECH-9, ECH-10 | bool values; unvalidated custom detector lists; missing id in the except handler | low | reject | Unreachable through the registered detectors and the protocol. |
+| BH-1 | "No tests in diff" | false | reject | The lens got the code-only diff; 468 tests exist (`tests/test_dq_detectors.py`, `test_detect_handler.py`). |
 
 ## Verification
 

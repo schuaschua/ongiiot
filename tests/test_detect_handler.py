@@ -26,14 +26,14 @@ def facility():
     return load(DEFAULT_PATH, stage=STAGE)
 
 
-def live_value(t):
-    """Healthy synthetic reading: varies every second and stays off every contract rail."""
-    return 100.0 + (t % 10) * 0.1
+def live_value(contract, t):
+    """Healthy synthetic reading: varies every second, mid-range of the contract (off both rails)."""
+    return (contract.min + contract.max) / 2 + (t % 10) * (contract.max - contract.min) * 1e-4
 
 
 def live_store(facility, lo=START.timestamp() - 120, hi=END.timestamp() + 60):
     return {
-        facility.alias(p.id, m): [(t, live_value(t), "GOOD") for t in range(int(lo), int(hi))]
+        facility.alias(p.id, m): [(t, live_value(p.contracts[m], t), "GOOD") for t in range(int(lo), int(hi))]
         for p in facility.pipes
         for m in p.sensors
     }
@@ -382,6 +382,9 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
         ("dq_stuck", {"min_run_s": 90}),  # above full_s
         ("dq_stuck", {"full_s": "60"}),
         ("dq_stuck", {"min_run_s": True}),
+        ("dq_flatline", {"rel_tol": 0.5}),  # would rail every in-range value
+        ("dq_stuck", {"full_s": 900}),  # must be < window_len_s
+        ("dq_flatline", {"min_run_s": 900, "full_s": 1000}),
     ],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
@@ -395,3 +398,35 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
     handler.check_detectors(handler.PASS1_DETECTORS, facility.tunables)
     assert dict(facility.tunables["detectors"]["dq_flatline"]) == {"min_run_s": 30, "full_s": 60, "rel_tol": 1.0e-6}
     assert dict(facility.tunables["detectors"]["dq_stuck"]) == {"min_run_s": 30, "full_s": 60}
+
+
+def test_dq_stuck_cold_start_needs_dq_flatline_rel_tol(facility):
+    """dq_stuck reads dq_flatline's rel_tol (one definition of railed), so it validates it too."""
+    from detect.core.detectors import DqStuck
+
+    with pytest.raises(ValueError, match="dq_flatline"):
+        handler.check_detectors([DqStuck()], _without(facility.tunables, "dq_flatline", "rel_tol"))
+
+
+def test_duplicate_detector_ids_fail_the_cold_start(facility):
+    from detect.core.detectors import DqStuck
+
+    with pytest.raises(ValueError, match="duplicate detector ids.*dq_stuck"):
+        handler.check_detectors([*handler.PASS1_DETECTORS, DqStuck()], facility.tunables)
+
+
+def test_pipe_detector_finding_for_another_pipe_is_skipped(facility):
+    p0, p1 = facility.pipes[0], facility.pipes[1]
+
+    class Misfiled(DqOn):
+        def detect(self, pw, t):  # this pipe's alias, another pipe's id
+            if pw.pipe.pipe_id != p0.id:
+                return []
+            return [Finding(self.id, "1", p1.id, (pw.pipe.aliases[p0.sensors[0]],), pw.window.start, pw.window.end, 0.9, "x.")]
+
+    fake = FakeSiteWise(live_store(facility), page=20000)
+    summary, logs = run_with(facility, fake, [Misfiled(facility, p0.id, p0.sensors[0], 0.9)])
+    assert summary["ran_ok"] == []
+    err = json.loads(logs[0])
+    assert err["detector_id"] == "dq_fake" and p1.id in err["error"]
+    assert set(written(facility, fake).values()) == {(1.0, "")}

@@ -39,8 +39,12 @@ PASS1_DETECTORS: Sequence[Detector] = PASS1  # dq_drift and dq_gap arrive in Sto
 KINDS = ("pipe", "facility")
 
 
-def check_detectors(detectors: Sequence[Any], tunables: Tunables) -> None:
-    """Cold-start check: a known ``kind`` for every detector and its own tunables present and valid."""
+def check_detectors(detectors: Sequence[Detector], tunables: Tunables) -> None:
+    """Cold-start check: unique ids, a known ``kind`` for every detector and its tunables present and valid."""
+    ids = [getattr(det, "id", None) for det in detectors]
+    dupes = sorted({i for i in ids if ids.count(i) > 1}, key=str)
+    if dupes:
+        raise ValueError(f"duplicate detector ids: {dupes}")
     for det in detectors:
         if getattr(det, "kind", None) not in KINDS:
             raise ValueError(f"detector {getattr(det, 'id', det)!r}: kind must be one of {KINDS}")
@@ -107,7 +111,7 @@ class Runtime:
 def run(
     rt: Runtime,
     scheduled_time: datetime,
-    detectors: Sequence[Any] = PASS1_DETECTORS,
+    detectors: Sequence[Detector] = PASS1_DETECTORS,
     clock: Callable[[], float] = time.monotonic,
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -169,7 +173,7 @@ def run(
     return summary
 
 
-def _run_detector(det: Any, fw: FacilityWindow, tunables: Tunables) -> list[Finding]:
+def _run_detector(det: Detector, fw: FacilityWindow, tunables: Tunables) -> list[Finding]:
     """Findings of one detector, dispatched by ``kind``; each ``dq_*`` finding must name one of its pipe's aliases."""
     kind = getattr(det, "kind", None)
     if kind == "pipe":

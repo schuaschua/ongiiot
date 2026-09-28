@@ -145,36 +145,52 @@ If sign-in through Identity Center does not work across regions, record it in th
 
 Each stage runs the detection Lambda `detection-<stage>` (`DetectionStack-<stage>`, image `detect/Dockerfile` built from `uv.lock`). EventBridge Scheduler `detection-<stage>` invokes it every minute with `{"scheduled_time": "<aws.scheduler.scheduled-time>"}`, which is the run ID (AD-12). It is single-flight: reserved concurrency 1, timeout 50 s, no async retries, events older than 60 s dropped, schedule retries 0 and no flexible window. The next scheduled run is the only retry.
 
-Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. `_dq` is `1 - ` the highest confidence among the sensor's failing checks (`detect/core/dq_score.py`), so a sensor is trusted below `dq_min` (0.5) once any check is more than half sure. A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
+Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. `_dq` is `1 -` the highest confidence among the sensor's failing checks (`detect/core/dq_score.py`). A sensor becomes untrusted (`_dq` below `dq_min`, 0.5, set in `tunables.dq_min` in `facility/facility.yaml`) once any check is more than half sure. A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
 
-Pass 1 runs these checks (`detect/core/detectors/`, tunables under `tunables.detectors.<id>` in `facility/facility.yaml`; a missing key fails the Lambda's cold start):
+Pass 1 runs these checks (`detect/core/detectors/`, tunables under `tunables.detectors.<id>` in `facility/facility.yaml`; a missing or invalid key fails the Lambda's cold start):
 
 | Check | Fires when | Confidence |
 | --- | --- | --- |
-| `dq_flatline` | the sensor is railed: its latest GOOD samples all sit within `rel_tol` (1e-6) x contract span of its contract `min` or `max` | `0` below `min_run_s` (30 s), then `run / full_s` (60 s), capped at 1 |
+| `dq_flatline` | the sensor is railed: its latest GOOD samples all sit at or beyond the same contract limit, within `rel_tol` (1e-6) x contract span of `min` or `max` (over- and under-range values count) | `0` below `min_run_s` (30 s), then `run / full_s` (60 s), capped at 1 |
 | `dq_stuck` | the sensor is frozen: its latest GOOD samples repeat exactly the same value, and that value is not railed (a railed run is only `dq_flatline`) | same rule, `min_run_s` 30 s, `full_s` 60 s |
 
-Both look only at the run of samples ending at the sensor's last GOOD sample in the window, so a sensor that starts varying again clears on the next run. BAD, UNCERTAIN and valueless samples are ignored. A run of 45 s scores confidence 0.75, so `_dq = 0.25`; a run of 60 s or more scores `_dq = 0.0`. With the 60 s ingest lag, expect the flag two to three minutes after the fault starts. Until Story 2.3 adds `dq_drift` and `dq_gap` as checks, a sensor whose samples are all BAD or UNCERTAIN still scores `1.0`.
+Both look only at the run of GOOD samples ending at the sensor's last GOOD sample in the window, so a sensor that starts varying again clears on the next run. A BAD, UNCERTAIN or valueless sample ends the run, and so does a gap longer than two sample periods (from the contract `rate_hz`, 2 s at 1 Hz). A run of 45 s scores confidence 0.75, so `_dq = 0.25`; a run of 60 s or more scores `_dq = 0.0`. Until Story 2.3 adds `dq_drift` and `dq_gap` as checks, a sensor whose samples are all BAD or UNCERTAIN still scores `1.0`.
 
-To try the checks on a developer stage with the simulator on (section 5), inject a fault and read the derived values two or three runs later:
+**A flag appears 2 to 3 minutes after a fault starts**, because each window ends `ingest_lag_s` (60 s) behind real time, the fault then needs 60 s inside the window for full confidence, and runs start on the minute. It clears the same way, 1 to 2 minutes after the sensor recovers.
+
+Known limits:
+
+- A sensor legitimately sitting at a contract limit, such as a shut-in pipe reading flow `0`, is flagged `dq_flatline`. The check cannot tell a real zero from a railed transmitter.
+- `dq_stuck` assumes non-quantized readings. A sensor that reports in coarse steps (for example whole degrees) and holds steady can repeat an exact value for a minute and be flagged.
+
+To try the checks on a developer stage with the simulator on (section 5), inject a fault on each sensor:
 
 ```bash
 export STAGE=poc-dj SIM_CONTROL_TABLE=sim-control-poc-dj
-uv run python -m ops.inject dq_flatline --pipe P-003 --measurement flow_in --minutes 10
-uv run python -m ops.inject dq_stuck --pipe P-015 --measurement temperature --minutes 10
-aws iotsitewise get-asset-property-value --region ap-southeast-1 \
-  --property-alias /poc-dj/lng1/train1/P-003/derived/flow_in_dq_fail   # "dq_flatline"
-uv run python -m ops.inject cancel <injection_id>                      # printed as "pk" by the inject call
+uv run python -m ops.inject dq_flatline --pipe P-003 --measurement flow_in --minutes 10    # prints the item; note its "pk"
+uv run python -m ops.inject dq_stuck --pipe P-015 --measurement temperature --minutes 10   # note this "pk" too
 ```
 
-Use the pipe's own area in the alias (`facility/facility.yaml`). The simulator's `dq_flatline` holds the contract minimum; `dq_stuck` repeats the last value with GOOD quality.
-
-The schedule follows the `simulator` switch (section 5). To check a run, read the one JSON summary line per run in the log group `/aws/lambda/detection-<stage>` (1-week retention): `run_id`, `window_start`, `window_end`, `reader_strategy`, `read_duration_s`, `aliases_no_data`, `values_written` (288 for 144 sensors). Or read a value:
+Wait 2 to 3 minutes, then read both sensors back. Use each pipe's own area from `facility/facility.yaml` (P-003 is in `train1`, P-015 in `train2`):
 
 ```bash
-aws iotsitewise get-asset-property-value --region ap-southeast-1 \
-  --property-alias /poc-dj/lng1/train1/P-007/derived/flow_in_dq
+for a in /poc-dj/lng1/train1/P-003/derived/flow_in /poc-dj/lng1/train2/P-015/derived/temperature; do
+  for p in _dq _dq_fail; do
+    echo "$a$p"; aws iotsitewise get-asset-property-value --region ap-southeast-1 --property-alias "$a$p" \
+      --query 'propertyValue.value' --output json
+  done
+done
+# expect flow_in_dq 0.0 / "dq_flatline" and temperature_dq 0.0 / "dq_stuck"; other sensors stay 1.0 / ""
 ```
+
+Then cancel both injections and confirm recovery: after 1 to 2 minutes the same loop shows `1.0` and an empty `_dq_fail` for both sensors.
+
+```bash
+uv run python -m ops.inject cancel <pk of the dq_flatline item>
+uv run python -m ops.inject cancel <pk of the dq_stuck item>
+```
+
+The simulator's `dq_flatline` holds the contract minimum; `dq_stuck` repeats the last value with GOOD quality.
 
 The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 

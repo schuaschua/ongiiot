@@ -27,9 +27,10 @@ START = END - timedelta(seconds=T["window_len_s"])
 FLAT, STUCK = DqFlatline(), DqStuck()
 
 
-def healthy(i: int) -> float:
-    """Varies every second, far from every contract rail."""
-    return 100.0 + (i % 10) * 0.1
+def healthy(i: int, m: str = "temperature") -> float:
+    """Varies every second, mid-range of the measurement's contract (far from both rails)."""
+    c = METAS["P-003"].contracts[m]
+    return (c.min + c.max) / 2 + (i % 10) * (c.max - c.min) * 1e-4
 
 
 def series(values, quality="GOOD", end=END):
@@ -41,15 +42,15 @@ def series(values, quality="GOOD", end=END):
 def window(pipe_id="P-003", overrides=None):
     """A pipe window of healthy data, with ``{measurement: [Sample]}`` overrides."""
     pipe = METAS[pipe_id]
-    data = {pipe.aliases[m]: series([healthy(i) for i in range(900)]) for m in pipe.aliases}
+    data = {pipe.aliases[m]: series([healthy(i, m) for i in range(900)]) for m in pipe.aliases}
     for m, s in (overrides or {}).items():
         data[pipe.aliases[m]] = s
     return PipeWindow(pipe=pipe, window=Window(start=START, end=END, series=data))
 
 
-def tail(values_before, value, run_n):
-    """Healthy history, then ``run_n`` samples of ``value`` at the end."""
-    return series([healthy(i) for i in range(values_before)] + [value] * run_n)
+def tail(values_before, value, run_n, m="temperature"):
+    """Healthy history of ``m``, then ``run_n`` samples of ``value`` at the end."""
+    return series([healthy(i, m) for i in range(values_before)] + [value] * run_n)
 
 
 def findings(pw):
@@ -66,7 +67,7 @@ def dq_of(pw, found):
 
 def test_railed():
     lo = METAS["P-003"].contracts["flow_in"].min
-    pw = window(overrides={"flow_in": tail(800, lo, 61)})  # 61 samples span 60 s
+    pw = window(overrides={"flow_in": tail(800, lo, 61, m="flow_in")})  # 61 samples span 60 s
     found = findings(pw)
     assert [(f.detector_id, f.evidence_aliases, f.confidence) for f in found] == [
         ("dq_flatline", (pw.pipe.aliases["flow_in"],), 1.0)
@@ -78,7 +79,7 @@ def test_railed_at_max_and_within_rel_tol():
     c = METAS["P-003"].contracts["pressure_in"]
     tol = T["detectors"]["dq_flatline"]["rel_tol"] * (c.max - c.min)
     values = [c.max - tol * (i % 2) for i in range(121)]  # jitters inside the tolerance
-    (f,) = findings(window(overrides={"pressure_in": series([healthy(i) for i in range(700)] + values)}))
+    (f,) = findings(window(overrides={"pressure_in": series([healthy(i, "pressure_in") for i in range(700)] + values)}))
     assert (f.detector_id, f.confidence) == ("dq_flatline", 1.0)
     assert "maximum" in f.explanation
 
@@ -99,14 +100,14 @@ def test_frozen():
 
 def test_short_run_gives_no_finding():
     lo = METAS["P-003"].contracts["flow_in"].min
-    pw = window(overrides={"temperature": tail(800, 251.37, 21), "flow_in": tail(800, lo, 21)})  # 20 s each
+    pw = window(overrides={"temperature": tail(800, 251.37, 21), "flow_in": tail(800, lo, 21, m="flow_in")})  # 20 s each
     assert findings(pw) == []
 
 
 @pytest.mark.parametrize("detector", ["dq_stuck", "dq_flatline"])
 def test_partial_run_scales_confidence(detector):
     value = METAS["P-003"].contracts["flow_in"].min if detector == "dq_flatline" else 12.5
-    pw = window(overrides={"flow_in": tail(800, value, 46)})  # 45 s
+    pw = window(overrides={"flow_in": tail(800, value, 46, m="flow_in")})  # 45 s
     (f,) = findings(pw)
     assert (f.detector_id, f.confidence) == (detector, 0.75)
     dq, failing = dq_of(pw, [f])["flow_in"]
@@ -122,11 +123,10 @@ def test_confidence_at_min_run_boundary():
 
 def test_recovered_gives_no_finding():
     lo = METAS["P-003"].contracts["flow_in"].min
-    recovered = [healthy(i) for i in range(10)]
     pw = window(
         overrides={
-            "temperature": series([251.37] * 300 + recovered),
-            "flow_in": series([lo] * 300 + recovered),
+            "temperature": series([251.37] * 300 + [healthy(i) for i in range(10)]),
+            "flow_in": series([lo] * 300 + [healthy(i, "flow_in") for i in range(10)]),
         }
     )
     assert findings(pw) == []
@@ -139,17 +139,74 @@ def test_railed_run_belongs_only_to_flatline():
     assert [f.detector_id for f in found] == ["dq_flatline"]
 
 
-def test_only_good_samples_with_values_count():
-    """BAD / UNCERTAIN / valueless samples are ignored: they neither start, extend nor break a run."""
-    stuck = [Sample(s.ts, s.value, "GOOD") for s in tail(800, 251.37, 61)]
-    noisy = [Sample(s.ts, healthy(i), "BAD") if i % 7 == 0 and i > 800 else s for i, s in enumerate(stuck)]
-    (f,) = findings(window(overrides={"temperature": noisy}))
-    assert f.detector_id == "dq_stuck" and f.confidence == 1.0
-    # A trailing run made only of non-GOOD samples is not a finding.
-    bad = [Sample(s.ts, s.value, "BAD" if s.value == 251.37 else "GOOD") for s in stuck]
-    assert findings(window(overrides={"temperature": bad})) == []
-    none_tail = series([healthy(i) for i in range(800)] + [None] * 61)
-    assert findings(window(overrides={"temperature": none_tail})) == []
+def test_non_good_sample_ends_the_run():
+    """A BAD / UNCERTAIN / valueless sample ends the run: the sensor may have changed during it."""
+    stuck = tail(800, 251.37, 61)
+    for broken in (Sample(stuck[-40].ts, 251.37, "BAD"), Sample(stuck[-40].ts, None, "GOOD"), Sample(stuck[-40].ts, 251.37, "UNCERTAIN")):
+        samples = stuck[:-40] + [broken] + stuck[-39:]  # 39 GOOD samples after it: 38 s
+        (f,) = findings(window(overrides={"temperature": samples}))
+        assert (f.detector_id, f.confidence) == ("dq_stuck", pytest.approx(38 / 60))
+    # Identical GOOD values on both sides of a BAD stretch are not one run.
+    split = series([healthy(i) for i in range(800)] + [251.37] * 20 + [300.0] * 30 + [251.37] * 20)
+    split = [Sample(s.ts, s.value, "BAD" if s.value == 300.0 else "GOOD") for s in split]
+    assert findings(window(overrides={"temperature": split})) == []
+
+
+def test_trailing_non_good_samples_are_skipped_to_the_last_good_one():
+    stuck = tail(800, 251.37, 61) + [Sample(END + timedelta(seconds=i), None, "BAD") for i in range(3)]
+    (f,) = findings(window(overrides={"temperature": stuck}))
+    assert (f.detector_id, f.confidence) == ("dq_stuck", 1.0)
+    bad_run = [Sample(s.ts, s.value, "BAD" if s.value == 251.37 else "GOOD") for s in tail(800, 251.37, 61)]
+    assert findings(window(overrides={"temperature": bad_run})) == []
+
+
+def test_gap_longer_than_two_periods_splits_the_run():
+    """Two identical GOOD samples far apart are not a long run (contract rate 1 Hz: max gap 2 s)."""
+    lo = METAS["P-003"].contracts["flow_in"].min
+    far = [Sample(END - timedelta(seconds=300), 251.37, "GOOD"), Sample(END - timedelta(seconds=1), 251.37, "GOOD")]
+    assert findings(window(overrides={"temperature": far, "flow_in": [Sample(x.ts, lo, "GOOD") for x in far]})) == []
+    # A 2 s gap (one missing sample) keeps the run whole; a 3 s gap splits it.
+    run = tail(800, 251.37, 61)
+    one_missing = run[:-30] + run[-29:]
+    assert findings(window(overrides={"temperature": one_missing}))[0].confidence == 1.0
+    two_missing = run[:-30] + run[-28:]
+    assert findings(window(overrides={"temperature": two_missing})) == []  # 27 s < min_run_s
+
+
+def test_gap_limit_follows_the_contract_rate():
+    import dataclasses
+
+    pipe = METAS["P-003"]
+    slow = dataclasses.replace(pipe.contracts["temperature"], rate_hz=0.1)  # period 10 s: gaps up to 20 s
+    none = dataclasses.replace(pipe.contracts["temperature"], rate_hz=0)  # no rate: 2 s
+    samples = [Sample(END - timedelta(seconds=10 * (7 - i)), 251.37, "GOOD") for i in range(7)]  # 60 s every 10 s
+    for contract, expected in ((slow, 1.0), (none, None)):
+        meta = dataclasses.replace(pipe, contracts={**pipe.contracts, "temperature": contract})
+        pw = PipeWindow(pipe=meta, window=Window(START, END, {**window().window.series, pipe.aliases["temperature"]: samples}))
+        found = STUCK.detect(pw, T)
+        assert [f.confidence for f in found] == ([] if expected is None else [expected])
+
+
+def test_values_beyond_the_contract_limits_are_railed():
+    c = METAS["P-003"].contracts["flow_in"]
+    for value, rail in ((c.max + 7.0, "maximum"), (c.min - 1.0, "minimum")):
+        (f,) = findings(window(overrides={"flow_in": tail(800, value, 61, m="flow_in")}))
+        assert (f.detector_id, f.confidence) == ("dq_flatline", 1.0) and rail in f.explanation
+    # Pegged above max but noisy: still railed, never "stuck".
+    noisy = series([healthy(i, "flow_in") for i in range(800)] + [c.max + 1 + (i % 3) for i in range(61)])
+    assert [f.detector_id for f in findings(window(overrides={"flow_in": noisy}))] == ["dq_flatline"]
+
+
+def test_explanation_omits_an_empty_unit():
+    import dataclasses
+
+    pipe = METAS["P-003"]
+    for unit in ("", None):
+        contract = dataclasses.replace(pipe.contracts["temperature"], unit=unit)
+        meta = dataclasses.replace(pipe, contracts={**pipe.contracts, "temperature": contract})
+        pw = PipeWindow(pipe=meta, window=Window(START, END, {**window().window.series, pipe.aliases["temperature"]: tail(800, 251.37, 61)}))
+        (f,) = STUCK.detect(pw, T)
+        assert f.explanation == "temperature has repeated exactly 251.37 for the last 60 s."
 
 
 def test_empty_or_missing_series_gives_no_finding():
@@ -159,14 +216,14 @@ def test_empty_or_missing_series_gives_no_finding():
 
 def test_other_sensors_keep_full_trust():
     lo = METAS["P-003"].contracts["flow_in"].min
-    pw = window(overrides={"flow_in": tail(800, lo, 61)})
+    pw = window(overrides={"flow_in": tail(800, lo, 61, m="flow_in")})
     scores = dq_of(pw, findings(pw))
     assert {m: s for m, s in scores.items() if m != "flow_in"} == {m: (1.0, "") for m in pw.pipe.aliases if m != "flow_in"}
 
 
 def test_finding_shape():
     lo = METAS["P-003"].contracts["flow_in"].min
-    pw = window(overrides={"flow_in": tail(800, lo, 61), "temperature": tail(800, 251.37, 50)})
+    pw = window(overrides={"flow_in": tail(800, lo, 61, m="flow_in"), "temperature": tail(800, 251.37, 50)})
     found = findings(pw)
     assert {f.detector_id for f in found} == {"dq_flatline", "dq_stuck"}
     for f in found:

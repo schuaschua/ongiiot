@@ -6,7 +6,9 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from detect.core.models import Sample, Tunables
+from detect.core.models import Contract, Sample, Tunables
+
+FALLBACK_MAX_GAP_S = 2.0  # used when the contract has no usable rate
 
 
 def own_tunables(t: Tunables, detector_id: str, keys: Sequence[str]) -> Mapping[str, Any]:
@@ -25,30 +27,54 @@ def own_tunables(t: Tunables, detector_id: str, keys: Sequence[str]) -> Mapping[
 
 
 def check_run_tunables(t: Tunables, detector_id: str, extra: Sequence[str] = ()) -> Mapping[str, Any]:
-    """Validate ``min_run_s`` (>= 0), ``full_s`` (> 0, >= ``min_run_s``) plus ``extra`` numeric keys."""
+    """Validate ``0 <= min_run_s <= full_s < window_len_s`` (``full_s > 0``) plus ``extra`` numeric keys."""
     mine = own_tunables(t, detector_id, ("min_run_s", "full_s", *extra))
     if mine["min_run_s"] < 0:
         raise ValueError(f"tunables.detectors.{detector_id}.min_run_s must be >= 0")
-    if not mine["full_s"] > 0 or mine["full_s"] < mine["min_run_s"]:
-        raise ValueError(f"tunables.detectors.{detector_id}.full_s must be > 0 and >= min_run_s")
+    if not 0 < mine["full_s"] < t["window_len_s"] or mine["full_s"] < mine["min_run_s"]:
+        raise ValueError(f"tunables.detectors.{detector_id}: need min_run_s <= full_s < window_len_s and full_s > 0")
     return mine
 
 
-def good(samples: Sequence[Sample]) -> list[Sample]:
-    """Only GOOD samples with a finite value count."""
-    return [
-        s
-        for s in samples
-        if s.quality == "GOOD" and s.value is not None and isinstance(s.value, (int, float)) and math.isfinite(s.value)
-    ]
+def is_good(s: Sample) -> bool:
+    """GOOD quality with a finite value."""
+    v = s.value
+    return s.quality == "GOOD" and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
-def trailing_run(samples: Sequence[Sample], same: Callable[[Sample], bool]) -> list[Sample]:
-    """The longest run of ``samples`` ending at the last one for which ``same`` holds (empty if the last fails)."""
-    i = len(samples)
-    while i > 0 and same(samples[i - 1]):
+def last_good(samples: Sequence[Sample]) -> Sample | None:
+    for s in reversed(samples):
+        if is_good(s):
+            return s
+    return None
+
+
+def max_gap_s(contract: Contract) -> float:
+    """Longest gap inside one run: 2 x the contract's sample period (2 s without a usable rate)."""
+    rate = contract.rate_hz
+    if isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0:
+        return 2.0 / rate
+    return FALLBACK_MAX_GAP_S
+
+
+def trailing_run(samples: Sequence[Sample], same: Callable[[Sample], bool], max_gap: float) -> list[Sample]:
+    """The run of GOOD samples ending at the last GOOD sample for which ``same`` holds.
+
+    A non-GOOD (or valueless) sample ends the run, and so does a gap longer than ``max_gap`` seconds
+    between consecutive samples. Empty if the last GOOD sample fails ``same``.
+    """
+    i = len(samples) - 1
+    while i >= 0 and not is_good(samples[i]):
         i -= 1
-    return list(samples[i:])
+    if i < 0 or not same(samples[i]):
+        return []
+    run = [samples[i]]
+    j = i - 1
+    while j >= 0 and is_good(samples[j]) and same(samples[j]) and (run[-1].ts - samples[j].ts).total_seconds() <= max_gap:
+        run.append(samples[j])
+        j -= 1
+    run.reverse()
+    return run
 
 
 def run_seconds(run: Sequence[Sample]) -> float:
@@ -61,3 +87,8 @@ def confidence(run_s: float, min_run_s: float, full_s: float) -> float:
     if run_s < min_run_s:
         return 0.0
     return min(1.0, run_s / full_s)
+
+
+def with_unit(value: float, unit: str | None) -> str:
+    """``"12.5 K"``, or just ``"12.5"`` when the unit is empty."""
+    return f"{value:g} {unit}" if unit else f"{value:g}"

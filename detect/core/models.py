@@ -90,6 +90,10 @@ class PipeDetector(Protocol):
 
     def detect(self, pw: PipeWindow, t: Tunables) -> list[Finding]: ...
 
+    def check_tunables(self, t: Tunables) -> None:
+        """Raise ``ValueError`` if ``t`` lacks or has invalid keys this detector reads (cold start)."""
+        ...
+
 
 @runtime_checkable
 class FacilityDetector(Protocol):
@@ -100,6 +104,10 @@ class FacilityDetector(Protocol):
     kind: Literal["facility"]
 
     def detect(self, fw: FacilityWindow, t: Tunables) -> list[Finding]: ...
+
+    def check_tunables(self, t: Tunables) -> None:
+        """Raise ``ValueError`` if ``t`` lacks or has invalid keys this detector reads (cold start)."""
+        ...
 
 
 Detector = PipeDetector | FacilityDetector
