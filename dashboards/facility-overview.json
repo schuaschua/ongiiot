@@ -5,7 +5,7 @@
     "ongiiot",
     "__STAGE__"
   ],
-  "description": "Every pipe with its latest raw values (UX-DR1 base layer). Click a pipe to open pipe-detail. Provisioned by GrafanaStack-__STAGE__; edits are overwritten on deploy.",
+  "description": "Every pipe with its latest raw values and its trust scores (UX-DR1). Click a pipe to open pipe-detail. Provisioned by GrafanaStack-__STAGE__; edits are overwritten on deploy.",
   "editable": false,
   "schemaVersion": 41,
   "timezone": "utc",
@@ -37,7 +37,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Latest raw value per sensor for every modelled pipe. Click a pipe to open its raw trends. Alert state and data-quality scores are added in later stories."
+        "content": "Per pipe: latest raw value per sensor; **Trust**, each sensor's data-quality score (`<measurement>_dq`, 1 = trustworthy; red below `dq_min` = __DQ_MIN__, green at or above); and **Failing checks**, the failing `dq_*` checks per sensor (`none` when all pass). Click any tile to open that pipe's raw trends. Alert state is added in a later story."
       }
     },
     {
@@ -63,7 +63,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 6,
+        "w": 8,
         "x": 0,
         "y": 3
       },
@@ -260,6 +260,341 @@
           "queryType": "PropertyValue",
           "region": "default",
           "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/methane_ppm"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "__PIPE_ID__ trust",
+      "description": "Data-quality score per sensor (derived/<measurement>_dq). Red below dq_min (__DQ_MIN__), green at or above.",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 9
+      },
+      "links": [
+        {
+          "title": "Open pipe-detail for __PIPE_ID__",
+          "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open pipe-detail for __PIPE_ID__",
+              "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+            }
+          ],
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": "__DQ_MIN__"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "pressure_in"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "pressure_in"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "pressure_out"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "pressure_out"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "flow_in"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "flow_in"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "flow_out"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "flow_out"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "temperature"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "temperature"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "methane_ppm"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "methane_ppm"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "pressure_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/pressure_in_dq"
+        },
+        {
+          "refId": "pressure_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/pressure_out_dq"
+        },
+        {
+          "refId": "flow_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/flow_in_dq"
+        },
+        {
+          "refId": "flow_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/flow_out_dq"
+        },
+        {
+          "refId": "temperature",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/temperature_dq"
+        },
+        {
+          "refId": "methane_ppm",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/methane_ppm_dq"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 5,
+      "title": "__PIPE_ID__ failing checks",
+      "description": "Failing dq_* checks per sensor (derived/<measurement>_dq_fail); none when all pass.",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "links": [
+        {
+          "title": "Open pipe-detail for __PIPE_ID__",
+          "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open pipe-detail for __PIPE_ID__",
+              "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "empty",
+                "result": {
+                  "text": "none",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/_dq_fail$/",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "pressure_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/pressure_in_dq_fail"
+        },
+        {
+          "refId": "pressure_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/pressure_out_dq_fail"
+        },
+        {
+          "refId": "flow_in",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/flow_in_dq_fail"
+        },
+        {
+          "refId": "flow_out",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/flow_out_dq_fail"
+        },
+        {
+          "refId": "temperature",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/temperature_dq_fail"
+        },
+        {
+          "refId": "methane_ppm",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/methane_ppm_dq_fail"
         }
       ]
     }

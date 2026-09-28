@@ -137,6 +137,14 @@ The output's `errors` list must be empty.
 
 The dashboards come from `dashboards/pipe-detail.json` and `dashboards/facility-overview.json`, filled with the stage's `alias_root` and pipe list from `facility/model.py`. A re-run updates everything in place by uid. Edits made in the Grafana UI are overwritten on the next deploy: change the JSON instead. Open a pipe directly with, for example for the stage `poc-dj`, `<GrafanaUrl>/d/pipe-detail-dj/pipe-detail?var-pipe_id=P-007&var-area=train1`.
 
+**Reading trust on the overview.** `facility-overview` (`facility-overview-<initials>` on a developer stage) has one row per area and, per pipe, a block of three tiles stacked in one column (three pipes per grid row):
+
+- `P-xxx (<area>)`: the latest raw value of each of the six sensors.
+- `P-xxx trust`: the latest `derived/<measurement>_dq` of each sensor (section 7), 0 to 1. Red means below `dq_min`, green means at or above it. The threshold is `tunables.dq_min` from `facility/facility.yaml`, filled in when the stage deploys (the custom resource property `DqMin`), so changing `dq_min` needs a deploy of `GrafanaStack-<stage>` to move the colour boundary. The text panel at the top shows the value in use.
+- `P-xxx failing checks`: the latest `derived/<measurement>_dq_fail` of each sensor. A sensor with no failing check shows a green `none`; otherwise its failing `dq_*` IDs show in red next to the property name (for example `dq_flatline` next to `flow_in_dq_fail`).
+
+A bad sensor therefore shows as a red trust value and a red failing-checks entry on its pipe. Clicking any of the three tiles opens `pipe-detail` for that pipe and area with the current time range. Each tile reads the latest value only (`PropertyValue`), so the overview runs 432 queries per 30 s refresh (24 pipes x 18 aliases). On a stage where detection has never run, the trust and failing-checks tiles show "No data".
+
 The provisioning Lambda (`grafana-provision-<stage>`) holds only the Grafana service-account actions on this workspace. Its per-stage service account (`ongiiot-provision-<stage>`) has the Grafana ADMIN role, which is workspace-wide: while its token lives it could change any stage's folders, data sources and dashboards, not only its own. On every run it mints a service-account token that lives at most 15 minutes and deletes it again. No API key is stored anywhere. Deleting `GrafanaStack-<stage>` removes the stage's folder, dashboards, data source and service account. The CI deploy role and its trust are unchanged: provisioning runs as a CloudFormation custom resource under the CDK execution role.
 
 If sign-in through Identity Center does not work across regions, record it in the spine's Open Questions and fall back to self-hosted Grafana with the same dashboards (see the spine's Open Questions).
@@ -146,6 +154,8 @@ If sign-in through Identity Center does not work across regions, record it in th
 Each stage runs the detection Lambda `detection-<stage>` (`DetectionStack-<stage>`, image `detect/Dockerfile` built from `uv.lock`). EventBridge Scheduler `detection-<stage>` invokes it every minute with `{"scheduled_time": "<aws.scheduler.scheduled-time>"}`, which is the run ID (AD-12). It is single-flight: reserved concurrency 1, timeout 50 s, no async retries, events older than 60 s dropped, schedule retries 0 and no flexible window. The next scheduled run is the only retry.
 
 Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. `_dq` is `1 -` the highest confidence among the sensor's failing checks (`detect/core/dq_score.py`). A sensor becomes untrusted (`_dq` below `dq_min`, 0.5, set in `tunables.dq_min` in `facility/facility.yaml`) once any check is more than half sure. A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
+
+The facility overview shows both values for every sensor, coloured by `dq_min` (section 6, "Reading trust on the overview").
 
 Pass 1 runs these checks (`detect/core/detectors/`, tunables under `tunables.detectors.<id>` in `facility/facility.yaml`; a missing or invalid key fails the Lambda's cold start):
 

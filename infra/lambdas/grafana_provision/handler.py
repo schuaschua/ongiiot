@@ -4,6 +4,7 @@ Runs inside ``cdk deploy`` (AD-16, amended 2026-09-28) through the Provider fram
 
 Event ``ResourceProperties`` (all strings; JSON where noted):
     Stage, WorkspaceId, GrafanaUrl, Region, AliasRoot, UidSuffix ("" for poc, "-<initials>" otherwise)
+    DqMin: tunables.dq_min from facility.yaml, as a decimal string
     FolderUid, DataSourceUid, PluginId, PluginVersion
     Pipes: JSON [{"id": "P-001", "area": "train1"}, ...]   (from facility/model.py)
     Dashboards: JSON {"<base uid>": <template dashboard>, ...}   (from dashboards/*.json)
@@ -15,9 +16,12 @@ the dashboards, keyed by uid so a re-run updates in place. Delete removes the st
 dashboards, data source and folder, then the service account; on Delete every failure is
 logged and skipped so the stack never sticks in DELETE_FAILED.
 
-Template placeholders: ``__DS_UID__``, ``__ALIAS_ROOT__``, ``__UID_SUFFIX__``, ``__STAGE__``.
-In the overview, panels containing ``__AREA__`` / ``__PIPE_ID__`` are prototypes cloned per
-area and per pipe. Responses stay far below the 4 KB custom resource limit.
+Template placeholders: ``__DS_UID__``, ``__ALIAS_ROOT__``, ``__UID_SUFFIX__``, ``__STAGE__``,
+``__DQ_MIN__`` (a string that is exactly ``"__DQ_MIN__"`` becomes the number, e.g. a threshold
+step value; inside longer text it becomes its decimal form). In the overview, panels containing
+``__AREA__`` / ``__PIPE_ID__`` are prototypes cloned per area and per pipe: the pipe prototypes
+form one block (their template gridPos, relative to each other), laid out left to right,
+as many blocks per grid row as fit in 24 columns. Responses stay far below the 4 KB custom resource limit.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ LOG.setLevel(logging.INFO)
 TOKEN_TTL_S = 900  # 15 minutes, the plan's upper bound
 DATASOURCE_TYPE = "grafana-iot-sitewise-datasource"
 MAX_ERROR_CHARS = 600  # keeps the Provider's failure reason well under 4 KB
-PIPE_PANEL_W, PIPE_PANEL_H, PIPES_PER_ROW = 6, 6, 4
+GRID_W = 24  # Grafana grid columns
 
 
 class GrafanaError(RuntimeError):
@@ -160,11 +164,17 @@ def short_lived_token(client: Any, workspace_id: str, sa_id: str, now: Callable[
 # -- templates -------------------------------------------------------------------------------
 
 
-def fill(value: Any, subs: dict[str, str]) -> Any:
-    """Replace placeholders in every string of a JSON value."""
+def fill(value: Any, subs: dict[str, Any]) -> Any:
+    """Replace placeholders in every string of a JSON value.
+
+    A string that is exactly a placeholder with a non-string substitute (a number) becomes
+    that value, so numeric fields such as threshold steps stay numbers.
+    """
     if isinstance(value, str):
+        if value in subs and not isinstance(subs[value], str):
+            return subs[value]
         for key, sub in subs.items():
-            value = value.replace(key, sub)
+            value = value.replace(key, str(sub))
         return value
     if isinstance(value, list):
         return [fill(v, subs) for v in value]
@@ -178,7 +188,11 @@ def _mentions(panel: dict[str, Any], placeholder: str) -> bool:
 
 
 def expand_pipe_panels(dashboard: dict[str, Any], pipes: list[dict[str, str]]) -> dict[str, Any]:
-    """Clone the ``__AREA__`` row prototype per area and the ``__PIPE_ID__`` panel per pipe."""
+    """Clone the ``__AREA__`` row prototype per area and the ``__PIPE_ID__`` panels per pipe.
+
+    The pipe prototypes keep their positions relative to each other and form one block per
+    pipe; blocks fill each area left to right, ``GRID_W // block width`` per grid row.
+    """
     panels = dashboard.get("panels", [])
     pipe_protos = [p for p in panels if _mentions(p, "__PIPE_ID__")]
     if not pipe_protos:
@@ -186,6 +200,11 @@ def expand_pipe_panels(dashboard: dict[str, Any], pipes: list[dict[str, str]]) -
     row_protos = [p for p in panels if p not in pipe_protos and _mentions(p, "__AREA__")]
     static = [p for p in panels if p not in pipe_protos and p not in row_protos]
     y = max((p["gridPos"]["y"] + p["gridPos"]["h"] for p in static), default=0)
+    x0 = min(p["gridPos"]["x"] for p in pipe_protos)
+    y0 = min(p["gridPos"]["y"] for p in pipe_protos)
+    block_w = max(p["gridPos"]["x"] + p["gridPos"]["w"] for p in pipe_protos) - x0
+    block_h = max(p["gridPos"]["y"] + p["gridPos"]["h"] for p in pipe_protos) - y0
+    per_row = max(1, GRID_W // block_w)
     next_id = max((p.get("id", 0) for p in panels), default=0) + 1
     out = list(static)
 
@@ -204,23 +223,25 @@ def expand_pipe_panels(dashboard: dict[str, Any], pipes: list[dict[str, str]]) -
         for i, pipe in enumerate(in_area):
             for proto in pipe_protos:
                 panel = fill(copy.deepcopy(proto), {"__PIPE_ID__": pipe["id"], "__AREA__": area})
+                g = proto["gridPos"]
                 panel.update(
                     id=next_id,
                     gridPos={
-                        "h": PIPE_PANEL_H,
-                        "w": PIPE_PANEL_W,
-                        "x": (i % PIPES_PER_ROW) * PIPE_PANEL_W,
-                        "y": y + (i // PIPES_PER_ROW) * PIPE_PANEL_H,
+                        "h": g["h"],
+                        "w": g["w"],
+                        "x": (i % per_row) * block_w + g["x"] - x0,
+                        "y": y + (i // per_row) * block_h + g["y"] - y0,
                     },
                 )
                 next_id += 1
                 out.append(panel)
-        y += -(-len(in_area) // PIPES_PER_ROW) * PIPE_PANEL_H
+        y += -(-len(in_area) // per_row) * block_h
     return {**dashboard, "panels": out}
 
 
 def render_dashboards(props: dict[str, Any]) -> list[dict[str, Any]]:
-    subs = {
+    subs: dict[str, Any] = {
+        "__DQ_MIN__": float(props["DqMin"]),
         "__DS_UID__": props["DataSourceUid"],
         "__ALIAS_ROOT__": props["AliasRoot"],
         "__UID_SUFFIX__": props["UidSuffix"],

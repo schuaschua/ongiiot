@@ -154,33 +154,107 @@ def test_placeholders_filled_per_stage():
     assert detail["id"] is None
 
 
-def test_overview_has_every_pipe_linking_to_stage_pipe_detail():
+MEASUREMENTS = ("pressure_in", "pressure_out", "flow_in", "flow_out", "temperature", "methane_ppm")
+
+
+def overview_for(props: dict) -> dict:
     aws, grafana = FakeAws(), FakeGrafana()
-    props = props_for("poc-dj")
     run("Create", props, aws, grafana)
-    overview = grafana.dashboards["facility-overview-dj"]["dashboard"]
-    stats = [p for p in overview["panels"] if p["type"] == "stat"]
+    (uid,) = [u for u in grafana.dashboards if u.startswith("facility-overview")]
+    return grafana.dashboards[uid]["dashboard"]
+
+
+def test_overview_has_every_pipe_linking_to_stage_pipe_detail():
+    props = props_for("poc-dj")
+    overview = overview_for(props)
     pipes = json.loads(props["Pipes"])
-    assert len(stats) == len(pipes) == 24
-    for panel, pipe in zip(stats, pipes):
-        assert panel["title"] == f"{pipe['id']} ({pipe['area']})"
-        url = panel["links"][0]["url"]
-        assert url.startswith(f"/d/pipe-detail-dj/pipe-detail?var-pipe_id={pipe['id']}&var-area={pipe['area']}")
-        aliases = {t["propertyAlias"] for t in panel["targets"]}
-        assert aliases == {f"${{alias_root}}/{pipe['area']}/{pipe['id']}/{m}" for m in
-                           ("pressure_in", "pressure_out", "flow_in", "flow_out", "temperature", "methane_ppm")}
-    rows = [p["title"] for p in overview["panels"] if p["type"] == "row"]
-    assert rows == ["train1", "train2"]
+    raw = [p for p in overview["panels"] if p["type"] == "stat" and p["title"].endswith(")")]
+    trust = [p for p in overview["panels"] if p["title"].endswith(" trust")]
+    failing = [p for p in overview["panels"] if p["title"].endswith(" failing checks")]
+    assert len(raw) == len(trust) == len(failing) == len(pipes) == 24
+    assert len([p for p in overview["panels"] if p["type"] == "stat"]) == 24 * 3
+    for pipe, r, t, f in zip(pipes, raw, trust, failing):
+        pid, area = pipe["id"], pipe["area"]
+        assert (r["title"], t["title"], f["title"]) == (f"{pid} ({area})", f"{pid} trust", f"{pid} failing checks")
+        for panel in (r, t, f):
+            for url in (panel["links"][0]["url"], panel["fieldConfig"]["defaults"]["links"][0]["url"]):
+                assert url.startswith(f"/d/pipe-detail-dj/pipe-detail?var-pipe_id={pid}&var-area={area}&")
+        root = f"${{alias_root}}/{area}/{pid}"
+        assert [x["propertyAlias"] for x in r["targets"]] == [f"{root}/{m}" for m in MEASUREMENTS]
+        assert [x["propertyAlias"] for x in t["targets"]] == [f"{root}/derived/{m}_dq" for m in MEASUREMENTS]
+        assert [x["propertyAlias"] for x in f["targets"]] == [f"{root}/derived/{m}_dq_fail" for m in MEASUREMENTS]
+        # Grouped per pipe: the three tiles stack in one column block.
+        assert r["gridPos"]["x"] == t["gridPos"]["x"] == f["gridPos"]["x"]
+        assert r["gridPos"]["y"] + r["gridPos"]["h"] == t["gridPos"]["y"]
+        assert t["gridPos"]["y"] + t["gridPos"]["h"] == f["gridPos"]["y"]
+    rows = [p for p in overview["panels"] if p["type"] == "row"]
+    assert [p["title"] for p in rows] == ["train1", "train2"]
+    # Every pipe of an area sits below its row and above the next one.
+    by_area = {a: [p for p, pipe in zip(raw, pipes) if pipe["area"] == a] for a in ("train1", "train2")}
+    assert all(p["gridPos"]["y"] > rows[0]["gridPos"]["y"] for p in by_area["train1"])
+    assert all(p["gridPos"]["y"] < rows[1]["gridPos"]["y"] for p in by_area["train1"])
+    assert all(p["gridPos"]["y"] > rows[1]["gridPos"]["y"] for p in by_area["train2"])
     ids = [p["id"] for p in overview["panels"]]
     assert len(ids) == len(set(ids))
-    # No two panels overlap on the grid.
+    # No two panels overlap on the grid, and all fit in 24 columns.
     cells = set()
     for p in overview["panels"]:
         g = p["gridPos"]
+        assert g["x"] + g["w"] <= 24, p["title"]
         for x in range(g["x"], g["x"] + g["w"]):
             for y in range(g["y"], g["y"] + g["h"]):
                 assert (x, y) not in cells, p["title"]
                 cells.add((x, y))
+
+
+def trust_threshold(overview: dict) -> list:
+    values = set()
+    for p in overview["panels"]:
+        if p["title"].endswith(" trust"):
+            steps = p["fieldConfig"]["defaults"]["thresholds"]["steps"]
+            assert steps[0] == {"color": "red", "value": None} and steps[1]["color"] == "green"
+            values.add(steps[1]["value"])
+    return sorted(values)
+
+
+def test_dq_min_threshold_from_facility_yaml():
+    facility = load(DEFAULT_PATH, stage="poc-dj")
+    props = props_for("poc-dj")
+    assert props["DqMin"] == str(float(facility.tunables["dq_min"]))
+    assert trust_threshold(overview_for(props)) == [facility.tunables["dq_min"]]
+
+
+def test_changed_dq_min_flows_into_threshold():
+    import dataclasses
+
+    facility = load(DEFAULT_PATH, stage="poc-dj")
+    changed = dataclasses.replace(facility, tunables={**facility.tunables, "dq_min": 0.7})
+    props = provision_properties(changed, WS, "https://g-abc123.grafana-workspace.example")
+    assert props["DqMin"] == "0.7"
+    overview = overview_for(props)
+    assert trust_threshold(overview) == [0.7]
+    assert isinstance(trust_threshold(overview)[0], float)  # a number, not the string "0.7"
+    (text,) = [p for p in overview["panels"] if p["type"] == "text"]
+    assert "0.7" in text["options"]["content"]
+
+
+def test_fill_keeps_numbers_numeric():
+    subs = {"__N__": 0.5, "__S__": "x"}
+    assert handler.fill({"a": "__N__", "b": "n=__N__", "c": "__S__", "d": [1, None]}, subs) == {
+        "a": 0.5, "b": "n=0.5", "c": "x", "d": [1, None]
+    }
+
+
+@pytest.mark.parametrize(("stage", "root", "suffix"), [("poc", "/lng1", ""), ("poc-dj", "/poc-dj/lng1", "-dj")])
+def test_overview_queries_only_own_alias_root(stage, root, suffix):
+    overview = overview_for(props_for(stage))
+    (alias_root,) = overview["templating"]["list"]
+    assert alias_root["name"] == "alias_root" and alias_root["query"] == root
+    aliases = [t["propertyAlias"] for p in overview["panels"] for t in p.get("targets", [])]
+    assert len(aliases) == 24 * 18 and all(a.startswith("${alias_root}/") for a in aliases)
+    assert all(t["datasource"]["uid"] == f"sitewise-{stage}" for p in overview["panels"] for t in p.get("targets", []))
+    urls = [p["links"][0]["url"] for p in overview["panels"] if p.get("links")]
+    assert len(urls) == 24 * 3 and all(u.startswith(f"/d/pipe-detail{suffix}/pipe-detail?") for u in urls)
 
 
 def test_poc_uses_unsuffixed_uids():

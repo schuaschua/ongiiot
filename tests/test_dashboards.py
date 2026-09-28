@@ -75,20 +75,64 @@ def test_no_aggregate_queries():
             assert "aggregates" not in t
 
 
-def test_overview_pipe_prototype_links_to_pipe_detail():
+LINK = "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__"
+
+
+def pipe_protos() -> dict[str, dict]:
+    """The overview's per-pipe prototypes keyed by title."""
     dash = load("facility-overview")
-    (proto,) = [p for p in dash["panels"] if "__PIPE_ID__" in json.dumps(p)]
-    link = "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__"
-    assert proto["links"][0]["url"].startswith(link)
-    assert proto["fieldConfig"]["defaults"]["links"][0]["url"].startswith(link)
+    return {p["title"]: p for p in dash["panels"] if "__PIPE_ID__" in json.dumps(p)}
+
+
+def test_overview_has_three_pipe_prototypes():
+    assert list(pipe_protos()) == ["__PIPE_ID__ (__AREA__)", "__PIPE_ID__ trust", "__PIPE_ID__ failing checks"]
+
+
+@pytest.mark.parametrize("title", ["__PIPE_ID__ (__AREA__)", "__PIPE_ID__ trust", "__PIPE_ID__ failing checks"])
+def test_overview_pipe_prototypes_link_to_pipe_detail(title):
+    proto = pipe_protos()[title]
+    assert proto["links"][0]["url"].startswith(LINK)
+    assert proto["fieldConfig"]["defaults"]["links"][0]["url"].startswith(LINK)
+    assert proto["datasource"] == DS
+    assert all(t["queryType"] == "PropertyValue" and t["datasource"] == DS for t in proto["targets"])  # latest value
+
+
+def test_overview_raw_prototype_targets():
+    proto = pipe_protos()["__PIPE_ID__ (__AREA__)"]
     assert [t["propertyAlias"] for t in proto["targets"]] == [
         f"${{alias_root}}/__AREA__/__PIPE_ID__/{m}" for m in MEASUREMENTS
     ]
-    assert all(t["queryType"] == "PropertyValue" for t in proto["targets"])  # latest value
+
+
+def test_overview_trust_prototype_uses_dq_min_threshold():
+    proto = pipe_protos()["__PIPE_ID__ trust"]
+    assert [t["propertyAlias"] for t in proto["targets"]] == [
+        f"${{alias_root}}/__AREA__/__PIPE_ID__/derived/{m}_dq" for m in MEASUREMENTS
+    ]
+    assert [t["refId"] for t in proto["targets"]] == list(MEASUREMENTS)
+    defaults = proto["fieldConfig"]["defaults"]
+    assert defaults["color"] == {"mode": "thresholds"}
+    # Red below dq_min, green at or above; the value is filled in at provision time.
+    assert defaults["thresholds"]["steps"] == [{"color": "red", "value": None}, {"color": "green", "value": "__DQ_MIN__"}]
+    assert proto["options"]["colorMode"] == "background"
+    assert proto["options"]["reduceOptions"]["calcs"] == ["lastNotNull"]
+
+
+def test_overview_failing_prototype_shows_non_empty_checks():
+    proto = pipe_protos()["__PIPE_ID__ failing checks"]
+    assert [t["propertyAlias"] for t in proto["targets"]] == [
+        f"${{alias_root}}/__AREA__/__PIPE_ID__/derived/{m}_dq_fail" for m in MEASUREMENTS
+    ]
+    # String fields are shown only through an explicit field regex.
+    assert proto["options"]["reduceOptions"]["fields"] == "/_dq_fail$/"
+    (mapping,) = proto["fieldConfig"]["defaults"]["mappings"]
+    assert mapping["type"] == "special" and mapping["options"]["match"] == "empty"
+    assert mapping["options"]["result"]["text"] == "none"
+    assert proto["fieldConfig"]["defaults"]["thresholds"]["steps"] == [{"color": "red", "value": None}]
 
 
 def test_only_known_placeholders():
-    known = {"__DS_UID__", "__ALIAS_ROOT__", "__UID_SUFFIX__", "__STAGE__", "__PIPE_ID__", "__AREA__"}
+    known = {"__DS_UID__", "__ALIAS_ROOT__", "__UID_SUFFIX__", "__STAGE__", "__PIPE_ID__", "__AREA__", "__DQ_MIN__"}
     for name in ("pipe-detail", "facility-overview"):
         found = set(re.findall(r"__[A-Z_]+?__", (DASHBOARDS / f"{name}.json").read_text()))
         assert found <= known, found
