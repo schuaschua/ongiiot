@@ -208,7 +208,13 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
   - `alias_root` is `/lng1` for `poc` and `/<stage>/lng1` otherwise. `facility/model.py` applies it.
   - One Grafana workspace, owned by the `poc` stage. Each stage provisions its own folder, data source and dashboards with uid `pipe-detail` (poc) or `pipe-detail-<initials>`. `DASHBOARD_UID`, `GRAFANA_URL` and `STAGE` reach the Lambda as CDK-set env vars.
   - `infra/grafana_provision.py` installs the SiteWise plugin 2.6.3 and creates data source and dashboards through the Grafana HTTP API with a short-lived service-account token, after `cdk deploy`.
-  - Only the named deploy owner deploys `poc`, from the integration branch.
+  - Deploys run only in GitHub Actions (`.github/workflows/deploy.yml`, runbook `docs/ci-cd.md`) through OIDC. GitHub holds no AWS keys.
+  - Trust is scoped by GitHub environment, with exact `sub` matches. `ongiiot-github-deploy` is trusted only for `repo:schuaschua/ongiiot:environment:poc` and `…:environment:dev`, and can only assume the CDK bootstrap roles. `ongiiot-github-diff` is trusted only for `repo:schuaschua/ongiiot:pull_request`, and can only assume the read-only CDK lookup role.
+  - Every deploy runs the test suite first; the `deploy` job needs it to pass before approval is requested or AWS is touched.
+  - `poc` deploys only on push to `main`, after approval in the GitHub environment `poc`. `poc-<initials>` stages deploy by manual dispatch in the environment `dev`, with no approval. Each run deploys only `*-<stage>`, one run per stage at a time.
+  - Pull requests run tests, `cdk synth` and a read-only `cdk diff --method template` against `poc` with the diff role, and never deploy.
+  - `GitHubOidcStack` is outside every stage. It is deployed once, locally, with `-c oidc=true`.
+  - Residual risk: all stages share one account and one set of bootstrap roles, so a run holding `dev` credentials can technically reach `poc`. The `poc` approval is enforced against PRs and branch runs without an environment, not against an edited workflow on the `dev` path.
 
 ### AD-17 — IAM write boundaries
 
@@ -382,6 +388,9 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 | Amazon SNS (operator topic, team-alarms topic) | managed service |
 | Amazon ECS on Fargate (simulator) `[ASSUMPTION]` | managed service |
 | AWS IAM Identity Center (Grafana login) `[ASSUMPTION]` | managed service |
+| GitHub Actions with AWS OIDC (`GitHubOidcStack`, roles `ongiiot-github-deploy` and `ongiiot-github-diff`) | managed service |
+| AWS CDK CLI (CI, `npx aws-cdk@…`) | 2.1143.0 |
+| Node.js (CI, for the CDK CLI) | 22 |
 
 ## Structural Seed
 
@@ -447,6 +456,8 @@ ops/                       # inject.py, reset.py, smoke.py (AD-15)
 infra/                     # CDK app per stage, grafana_provision.py (AD-10, AD-16, AD-17)
 dashboards/                # facility-overview.json, pipe-detail.json (AD-8)
 tests/                     # detector units, test_layers, test_deeplink_contract, alias-guard tests
+.github/workflows/         # ci.yml (PR gate), deploy.yml (poc on main, dev stages by dispatch) (AD-16)
+docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 ```
 
 ## Capability → Architecture Map
@@ -468,7 +479,7 @@ tests/                     # detector units, test_layers, test_deeplink_contract
 - **True streaming** (IoT Core → Kinesis → Managed Flink), Greengrass edge processing: next phase; AD-1 keeps ingestion stable.
 - **Real tag names:** real-stream aliases will not follow the POC convention. Revisit when the client stream is known; mapping stays in `facility.yaml` (AD-1, AD-14).
 - **Data diode, customer-held keys, production hardening:** next phase per spec non-goals.
-- **CI/CD:** manual deploy per AD-16. Revisit if the POC continues past day 4.
+- **CI/CD beyond the POC:** GitHub Actions with OIDC deploys `poc` and developer stages (AD-16). Deferred: per-stage bootstrap isolation (separate qualifiers or accounts, so `dev` credentials cannot reach `poc`), a `prod` stage, multi-account promotion, and signed build artifacts. Revisit before any environment beyond POC.
 - **Storage tiers, retention and cost controls:** SiteWise default retention kept. Revisit before any run longer than the POC.
 - **Teardown:** `cdk destroy` per stage after removing the Grafana data source. Revisit at POC close.
 - **Grafana access beyond IAM Identity Center users for the team:** POC only.
@@ -483,3 +494,4 @@ tests/                     # detector units, test_layers, test_deeplink_contract
 | Can IAM Identity Center be enabled in the POC account for Grafana? | Day 0 with the account owner; fallback self-hosted Grafana with the same dashboards |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
 | Fargate for the simulator and 1 Hz per measurement hold? | Day 1; change is local to `sim/` and `infra/` |
+| Who are the required reviewers for the GitHub `poc` environment (AD-16)? | Before the first merge to `main` that deploys; set in repo settings per `docs/ci-cd.md` |

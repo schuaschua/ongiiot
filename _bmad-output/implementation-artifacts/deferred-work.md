@@ -16,3 +16,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-simulator.md`
   summary: Add `ops/inject list` to show active and recent injections with their IDs, so an operator can cancel without the original output.
   evidence: cancel needs the ULID printed at creation; without it the operator must scan DynamoDB by hand to stop a running leak.
+- source_plan: `_bmad-output/implementation-artifacts/plan-cicd-github-actions.md`
+  summary: Grafana provisioning (AD-16 `infra/grafana_provision.py`) needs a step in `deploy.yml` and Grafana API permissions for the CI deploy path.
+  evidence: The deploy role can only assume CDK bootstrap roles, and deploy.yml has no post-deploy provisioning step; surfaces in Story 1.5.
