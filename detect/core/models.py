@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 Quality = Literal["GOOD", "BAD", "UNCERTAIN"]
 QUALITIES: frozenset[str] = frozenset({"GOOD", "BAD", "UNCERTAIN"})
@@ -77,5 +77,29 @@ class Finding:
     explanation: str  # one plain sentence
 
 
-# pipe detector:     detect(pw: PipeWindow, t: Tunables) -> list[Finding]
-# facility detector: detect(fw: FacilityWindow, t: Tunables) -> list[Finding]
+DetectorKind = Literal["pipe", "facility"]
+
+
+@runtime_checkable
+class PipeDetector(Protocol):
+    """Called once per pipe with that pipe's window (AD-5). Pure: no I/O, no environment, no ``_dq``."""
+
+    id: str
+    version: str
+    kind: Literal["pipe"]
+
+    def detect(self, pw: PipeWindow, t: Tunables) -> list[Finding]: ...
+
+
+@runtime_checkable
+class FacilityDetector(Protocol):
+    """Called once per run with the whole facility window (AD-5). Pure: no I/O, no environment, no ``_dq``."""
+
+    id: str
+    version: str
+    kind: Literal["facility"]
+
+    def detect(self, fw: FacilityWindow, t: Tunables) -> list[Finding]: ...
+
+
+Detector = PipeDetector | FacilityDetector

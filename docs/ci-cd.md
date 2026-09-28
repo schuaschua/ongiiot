@@ -145,7 +145,29 @@ If sign-in through Identity Center does not work across regions, record it in th
 
 Each stage runs the detection Lambda `detection-<stage>` (`DetectionStack-<stage>`, image `detect/Dockerfile` built from `uv.lock`). EventBridge Scheduler `detection-<stage>` invokes it every minute with `{"scheduled_time": "<aws.scheduler.scheduled-time>"}`, which is the run ID (AD-12). It is single-flight: reserved concurrency 1, timeout 50 s, no async retries, events older than 60 s dropped, schedule retries 0 and no flexible window. The next scheduled run is the only retry.
 
-Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. Until the Story 2.2 and 2.3 checks exist, a sensor with any samples in the window scores `1.0` with an empty `_dq_fail`, even if none of them is GOOD (all BAD or UNCERTAIN still scores `1.0`). A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
+Each run reads the window `[floor_minute(scheduled_time) - ingest_lag_s - window_len_s, floor_minute(scheduled_time) - ingest_lag_s)` (tunables from the bundled `facility/facility.yaml`) and writes, for every sensor, `derived/<measurement>_dq` (1.0 = trustworthy) and `derived/<measurement>_dq_fail` (the failing `dq_*` checks, comma-separated, empty if none), timestamped at the window end. `_dq` is `1 - ` the highest confidence among the sensor's failing checks (`detect/core/dq_score.py`), so a sensor is trusted below `dq_min` (0.5) once any check is more than half sure. A sensor with no samples at all scores `0.0` with `dq_gap`. So after a simulator start, expect `0.0` / `dq_gap` until data is older than the ingest lag (about 2 minutes).
+
+Pass 1 runs these checks (`detect/core/detectors/`, tunables under `tunables.detectors.<id>` in `facility/facility.yaml`; a missing key fails the Lambda's cold start):
+
+| Check | Fires when | Confidence |
+| --- | --- | --- |
+| `dq_flatline` | the sensor is railed: its latest GOOD samples all sit within `rel_tol` (1e-6) x contract span of its contract `min` or `max` | `0` below `min_run_s` (30 s), then `run / full_s` (60 s), capped at 1 |
+| `dq_stuck` | the sensor is frozen: its latest GOOD samples repeat exactly the same value, and that value is not railed (a railed run is only `dq_flatline`) | same rule, `min_run_s` 30 s, `full_s` 60 s |
+
+Both look only at the run of samples ending at the sensor's last GOOD sample in the window, so a sensor that starts varying again clears on the next run. BAD, UNCERTAIN and valueless samples are ignored. A run of 45 s scores confidence 0.75, so `_dq = 0.25`; a run of 60 s or more scores `_dq = 0.0`. With the 60 s ingest lag, expect the flag two to three minutes after the fault starts. Until Story 2.3 adds `dq_drift` and `dq_gap` as checks, a sensor whose samples are all BAD or UNCERTAIN still scores `1.0`.
+
+To try the checks on a developer stage with the simulator on (section 5), inject a fault and read the derived values two or three runs later:
+
+```bash
+export STAGE=poc-dj SIM_CONTROL_TABLE=sim-control-poc-dj
+uv run python -m ops.inject dq_flatline --pipe P-003 --measurement flow_in --minutes 10
+uv run python -m ops.inject dq_stuck --pipe P-015 --measurement temperature --minutes 10
+aws iotsitewise get-asset-property-value --region ap-southeast-1 \
+  --property-alias /poc-dj/lng1/train1/P-003/derived/flow_in_dq_fail   # "dq_flatline"
+uv run python -m ops.inject cancel <injection_id>                      # printed as "pk" by the inject call
+```
+
+Use the pipe's own area in the alias (`facility/facility.yaml`). The simulator's `dq_flatline` holds the contract minimum; `dq_stuck` repeats the last value with GOOD quality.
 
 The schedule follows the `simulator` switch (section 5). To check a run, read the one JSON summary line per run in the log group `/aws/lambda/detection-<stage>` (1-week retention): `run_id`, `window_start`, `window_end`, `reader_strategy`, `read_duration_s`, `aliases_no_data`, `values_written` (288 for 144 sensors). Or read a value:
 

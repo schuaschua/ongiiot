@@ -41,8 +41,8 @@
   summary: Test the BatchGet reader's skippedEntries (non-SUCCESS) and unknown-entryId error paths.
   evidence: The fake always returns an empty skippedEntries list; an inverted check would record a read failure as a dq_gap.
 - source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
-  summary: Add typed PipeDetector/FacilityDetector protocols to detect/core/models.py when Story 2.2 adds the first detectors; teach run() to tell pipe and facility detectors apart.
-  evidence: PASS1_DETECTORS is Sequence[Any] today; the contract is only in comments.
+  summary: Addressed (Story 2.2) — typed PipeDetector/FacilityDetector protocols in detect/core/models.py; run() dispatches by kind.
+  evidence: detect/core/models.py, detect/handler.py::_run_detector (plan-2-2-dq-flatline-stuck.md).
 - source_plan: `_bmad-output/implementation-artifacts/plan-2-1-dq-refresh.md`
   summary: Story 4.4 alarms must include detection Lambda Errors and Scheduler TargetErrorCount/InvocationDroppedCount (no retries, no DLQ by design).
   evidence: A detector failing every minute would otherwise leave stale _dq values unnoticed.
