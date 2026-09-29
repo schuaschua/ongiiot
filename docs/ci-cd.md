@@ -1,5 +1,7 @@
 # CI/CD runbook: GitHub Actions with AWS OIDC
 
+For the day of the demo (checklist, demo script, fallback) see [`docs/demo-runbook.md`](demo-runbook.md).
+
 All deploys run in GitHub Actions for `schuaschua/ongiiot` into AWS account `123456789012`, region `ap-southeast-1` (AD-16). GitHub holds no AWS keys. Workflows get short-lived credentials (1 h at most) through OIDC from two roles:
 
 | Role | Trusted for (OIDC `sub`, exact match) | May assume |
