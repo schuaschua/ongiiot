@@ -1,6 +1,8 @@
-"""CDK Template assertions for the detection stack (Story 2.1; AD-12, AD-17, AD-18)."""
+"""CDK Template assertions for the detection stack (Story 2.1; AD-12, AD-15, AD-17, AD-18)."""
 
 from __future__ import annotations
+
+import json
 
 import aws_cdk as cdk
 import pytest
@@ -52,9 +54,18 @@ def table_id(tpl: dict) -> str:
     return tid
 
 
-def topic_id(tpl: dict) -> str:
-    (tid,) = of_type(tpl, "AWS::SNS::Topic")
+def topic_id(tpl: dict, prefix: str = "operators-") -> str:
+    (tid,) = [k for k, r in of_type(tpl, "AWS::SNS::Topic").items() if r["Properties"]["TopicName"].startswith(prefix)]
     return tid
+
+
+def topic_policy(tpl: dict, tid: str) -> list[dict]:
+    (policy,) = [p for p in props(tpl, "AWS::SNS::TopicPolicy") if p["Topics"] == [{"Ref": tid}]]
+    return policy["PolicyDocument"]["Statement"]
+
+
+def alarms(tpl: dict) -> dict[str, dict]:
+    return {p["AlarmName"]: p for p in props(tpl, "AWS::CloudWatch::Alarm")}
 
 
 def test_incidents_table(synthesized):
@@ -161,28 +172,35 @@ def test_switch_off_disables_only_the_schedule():
     (s_on,) = props(on, "AWS::Scheduler::Schedule")
     s_on["State"] = "DISABLED"
     on["Outputs"]["ScheduleState"]["Value"] = "DISABLED"
+    # AD-15: a deliberate stop does not page the team; the errors alarm stays enabled.
+    assert alarms(off)["simulator-down-poc-dj"]["ActionsEnabled"] is False
+    assert alarms(on)["simulator-down-poc-dj"]["ActionsEnabled"] is True
+    assert "ActionsEnabled" not in alarms(off)["detection-errors-poc-dj"]
+    alarms(on)["simulator-down-poc-dj"]["ActionsEnabled"] = False
     assert on == off
 
 
 # -- Story 3.4: operator topic (AD-7) ---------------------------------------------------------------
 
 
-def test_operator_topic_without_subscriptions_by_default(synthesized):
-    stage, _, stack, tpl = synthesized
-    (topic,) = props(tpl, "AWS::SNS::Topic")
-    assert topic["TopicName"] == f"operators-{stage}"
-    assert of_type(tpl, "AWS::SNS::Subscription") == {}
-    assert tpl["Outputs"]["OperatorTopicArn"]["Value"] == {"Ref": topic_id(tpl)}
-    (policy,) = props(tpl, "AWS::SNS::TopicPolicy")
-    assert policy["Topics"] == [{"Ref": topic_id(tpl)}]
-    (stmt,) = policy["PolicyDocument"]["Statement"]
+def deny_subscribe_ok(stack, stmt: dict, tid: str) -> bool:
     assert stmt["Effect"] == "Deny" and stmt["Action"] == "sns:Subscribe" and stmt["Principal"] == {"AWS": "*"}
-    assert stmt["Resource"] == {"Ref": topic_id(tpl)}
+    assert stmt["Resource"] == {"Ref": tid}
     assert stmt["Condition"]["ArnNotLike"] == {
         "aws:PrincipalArn": stack.resolve(
             f"arn:{stack.partition}:iam::{stack.account}:role/cdk-hnb659fds-cfn-exec-role-{stack.account}-ap-southeast-1"
         )
     }
+    return True
+
+
+def test_operator_topic_without_subscriptions_by_default(synthesized):
+    stage, _, stack, tpl = synthesized
+    assert sorted(p["TopicName"] for p in props(tpl, "AWS::SNS::Topic")) == [f"operators-{stage}", f"team-alarms-{stage}"]
+    assert of_type(tpl, "AWS::SNS::Subscription") == {}
+    assert tpl["Outputs"]["OperatorTopicArn"]["Value"] == {"Ref": topic_id(tpl)}
+    (stmt,) = topic_policy(tpl, topic_id(tpl))
+    assert deny_subscribe_ok(stack, stmt, topic_id(tpl))
 
 
 def test_operator_topic_two_addresses():
@@ -190,4 +208,76 @@ def test_operator_topic_two_addresses():
     subs = sorted(props(tpl, "AWS::SNS::Subscription"), key=lambda p: p["Endpoint"])
     assert [(s["Protocol"], s["Endpoint"]) for s in subs] == [("email", "a@example.com"), ("email", "b@example.org")]
     assert all(s["TopicArn"] == {"Ref": topic_id(tpl)} for s in subs)
-    assert len(props(tpl, "AWS::SNS::TopicPolicy")) == 1
+    assert len(props(tpl, "AWS::SNS::TopicPolicy")) == 2
+
+
+# -- Story 4.4: health alarms (AD-15) ---------------------------------------------------------------
+
+
+def test_health_alarms_page_the_team_topic_only(synthesized):
+    stage, _, stack, tpl = synthesized
+    team = {"Ref": topic_id(tpl, "team-alarms-")}
+    common = {"Threshold": 1, "AlarmActions": [team], "OKActions": [team]}
+    assert alarms(tpl) == {
+        f"detection-errors-{stage}": {
+            **common,
+            "AlarmName": f"detection-errors-{stage}",
+            "AlarmDescription": f"Detection Lambda detection-{stage} reported at least one error in 5 minutes",
+            "Namespace": "AWS/Lambda",
+            "MetricName": "Errors",
+            "Dimensions": [{"Name": "FunctionName", "Value": f"detection-{stage}"}],
+            "Statistic": "Sum",
+            "Period": 300,
+            "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+            "EvaluationPeriods": 1,
+            "DatapointsToAlarm": 1,
+            "TreatMissingData": "notBreaching",
+        },
+        f"simulator-down-{stage}": {
+            **common,
+            "AlarmName": f"simulator-down-{stage}",
+            "AlarmDescription": f"Simulator service simulator-{stage} has had no running task for 3 minutes",
+            "ActionsEnabled": True,
+            "Namespace": "AWS/ECS",
+            "MetricName": "CPUUtilization",
+            "Dimensions": [
+                {"Name": "ClusterName", "Value": f"simulator-{stage}"},
+                {"Name": "ServiceName", "Value": f"simulator-{stage}"},
+            ],
+            "Statistic": "SampleCount",
+            "Period": 60,
+            "ComparisonOperator": "LessThanThreshold",
+            "EvaluationPeriods": 3,
+            "DatapointsToAlarm": 3,
+            "TreatMissingData": "breaching",
+        },
+    }
+    # The dimensions are the names SimulatorStack actually synthesizes.
+    sim_tpl = Template.from_stack(stack.node.scope.node.find_child(f"SimulatorStack-{stage}")).to_json()
+    (cluster,) = props(sim_tpl, "AWS::ECS::Cluster")
+    (service,) = props(sim_tpl, "AWS::ECS::Service")
+    assert alarms(tpl)[f"simulator-down-{stage}"]["Dimensions"] == [
+        {"Name": "ClusterName", "Value": cluster["ClusterName"]},
+        {"Name": "ServiceName", "Value": service["ServiceName"]},
+    ]
+    # Never the operator topic.
+    assert f'"{topic_id(tpl)}"' not in json.dumps(alarms(tpl))
+    assert tpl["Outputs"]["TeamAlarmsTopicArn"]["Value"] == team
+
+    deny, allow = topic_policy(tpl, team["Ref"])
+    assert deny_subscribe_ok(stack, deny, team["Ref"])
+    assert allow["Effect"] == "Allow" and allow["Action"] == "sns:Publish" and allow["Resource"] == team
+    assert allow["Principal"] == {"Service": "cloudwatch.amazonaws.com"}
+    assert allow["Condition"] == {
+        "ArnLike": {"aws:SourceArn": stack.resolve(f"arn:{stack.partition}:cloudwatch:ap-southeast-1:{stack.account}:alarm:*")},
+        "StringEquals": {"aws:SourceAccount": stack.resolve(stack.account)},
+    }
+
+
+def test_team_emails_subscribe_the_team_topic_only():
+    _, _, tpl = synth("poc-dj", team_emails="a@x.io, A@x.io,b@y.io")
+    subs = sorted(props(tpl, "AWS::SNS::Subscription"), key=lambda p: p["Endpoint"])
+    assert [(s["Protocol"], s["Endpoint"]) for s in subs] == [("email", "a@x.io"), ("email", "b@y.io")]
+    assert all(s["TopicArn"] == {"Ref": topic_id(tpl, "team-alarms-")} for s in subs)
+    with pytest.raises(ValueError, match="team_emails: not an email address"):
+        synth("poc-dj", team_emails="a@x.io,not-an-address")

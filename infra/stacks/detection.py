@@ -23,6 +23,12 @@
 - ``GRAFANA_URL`` (``SharedGrafanaStack``'s workspace URL, a cross-stack reference) and ``DASHBOARD_UID``
   (``pipe-detail`` for ``poc``, ``pipe-detail-<initials>`` otherwise, the same derivation as
   ``grafana_provision``) reach the Lambda for the Deep link v1 (AD-8).
+- Health (Story 4.4; AD-15): ``team-alarms-<stage>`` SNS topic, email subscriptions only from the CDK context
+  ``team_emails`` (parsed like ``operator_emails``), the same deny-Subscribe policy. Two alarms send ALARM and
+  OK to it, never to the operator topic: ``detection-errors-<stage>`` (Lambda ``Errors`` Sum >= 1 over 5 min,
+  missing data not breaching) and ``simulator-down-<stage>`` (ECS ``CPUUtilization`` SampleCount < 1 for
+  3 x 60 s on the deterministic ``simulator-<stage>`` cluster and service, missing data breaching). With
+  ``-c simulator=off`` the simulator alarm's actions are disabled.
 """
 
 from __future__ import annotations
@@ -34,6 +40,8 @@ from pathlib import Path
 from typing import Any
 
 import aws_cdk as cdk
+from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ecr_assets as ecr_assets
 from aws_cdk import aws_iam as iam
@@ -78,28 +86,34 @@ NOTIFY_ACTIONS = ["dynamodb:UpdateItem"]
 NOTIFY_ATTRIBUTES = ["pk", "sk", "incident_id", "notified_at"]
 
 EMAILS_CONTEXT = "operator_emails"
+TEAM_EMAILS_CONTEXT = "team_emails"
 _EMAIL = re.compile(r"^[^@\s,]+@[^@\s,]+\.[^@\s,]+$")
 # The CDK bootstrap's CloudFormation execution role, the only principal allowed to subscribe (the deploy path).
 DEPLOY_ROLE_PREFIX = f"cdk-{BOOTSTRAP_QUALIFIER}-cfn-exec-role-"
 
 
-def operator_emails(value: object) -> list[str]:
-    """The ``operator_emails`` context: a comma-separated list (absent or empty: none). Duplicates dropped,
-    order kept (case-insensitive: the first spelling wins); a malformed address fails synth."""
+def emails(value: object, context_name: str) -> list[str]:
+    """An email-list context (``context_name``): a comma-separated list (absent or empty: none). Duplicates
+    dropped, order kept (case-insensitive: the first spelling wins); a malformed address fails synth."""
     if value is None:
         return []
     if not isinstance(value, str):
-        raise ValueError(f"{EMAILS_CONTEXT} must be a comma-separated string, got {value!r}")
+        raise ValueError(f"{context_name} must be a comma-separated string, got {value!r}")
     out: list[str] = []
     for raw in value.split(","):
         addr = raw.strip()
         if not addr:
             continue
         if not _EMAIL.match(addr):
-            raise ValueError(f"{EMAILS_CONTEXT}: not an email address: {addr!r}")
+            raise ValueError(f"{context_name}: not an email address: {addr!r}")
         if addr.lower() not in {a.lower() for a in out}:
             out.append(addr)
     return out
+
+
+def operator_emails(value: object) -> list[str]:
+    """The ``operator_emails`` context (see ``emails``)."""
+    return emails(value, EMAILS_CONTEXT)
 
 
 def schedule_state(value: object) -> str:
@@ -146,26 +160,8 @@ class DetectionStack(cdk.Stack):
         )
 
         # AD-7: the operator topic; subscriptions only from the allowlist, Subscribe denied to all but the deploy role.
-        self.operator_topic = sns.Topic(
-            self, "OperatorTopic", topic_name=f"operators-{stage}", display_name=f"POC pipe incidents ({stage})"
-        )
-        for addr in operator_emails(self.node.try_get_context(EMAILS_CONTEXT)):
-            self.operator_topic.add_subscription(subs.EmailSubscription(addr))
-        self.operator_topic.add_to_resource_policy(
-            iam.PolicyStatement(
-                sid="DenySubscribeExceptDeployRole",
-                effect=iam.Effect.DENY,
-                principals=[iam.AnyPrincipal()],
-                actions=["sns:Subscribe"],
-                resources=[self.operator_topic.topic_arn],
-                conditions={
-                    "ArnNotLike": {
-                        "aws:PrincipalArn": self.format_arn(
-                            service="iam", region="", resource="role", resource_name=f"{DEPLOY_ROLE_PREFIX}{self.account}-{self.region}"
-                        )
-                    }
-                },
-            )
+        self.operator_topic = self._email_topic(
+            "OperatorTopic", f"operators-{stage}", f"POC pipe incidents ({stage})", EMAILS_CONTEXT
         )
 
         # AD-17: exactly these grants, nothing else.
@@ -270,3 +266,102 @@ class DetectionStack(cdk.Stack):
         cdk.CfnOutput(self, "IncidentsTableName", value=self.incidents_table.table_name)
         cdk.CfnOutput(self, "ScheduleState", value=state)
         cdk.CfnOutput(self, "OperatorTopicArn", value=self.operator_topic.topic_arn)
+
+        # AD-15 Health: two alarms, ALARM and OK to the team topic only (never the operator topic).
+        self.team_topic = self._email_topic(
+            "TeamAlarmsTopic", f"team-alarms-{stage}", f"POC platform health ({stage})", TEAM_EMAILS_CONTEXT
+        )
+        # The Deny-only topic policy replaces SNS's default one, so CloudWatch needs an explicit publish grant,
+        # limited to this account's alarms.
+        self.team_topic.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="AllowCloudWatchAlarmsPublish",
+                principals=[iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+                actions=["sns:Publish"],
+                resources=[self.team_topic.topic_arn],
+                conditions={
+                    "ArnLike": {
+                        "aws:SourceArn": self.format_arn(
+                            service="cloudwatch",
+                            resource="alarm",
+                            resource_name="*",
+                            arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
+                        )
+                    },
+                    "StringEquals": {"aws:SourceAccount": self.account},
+                },
+            )
+        )
+        team_action = cw_actions.SnsAction(self.team_topic)
+        self.errors_alarm = cloudwatch.Alarm(
+            self,
+            "DetectionErrorsAlarm",
+            alarm_name=f"detection-errors-{stage}",
+            alarm_description=f"Detection Lambda {name} reported at least one error in 5 minutes",
+            metric=cloudwatch.Metric(
+                namespace="AWS/Lambda",
+                metric_name="Errors",
+                dimensions_map={"FunctionName": name},
+                statistic="Sum",
+                period=cdk.Duration.seconds(300),
+            ),
+            threshold=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        # No running task means no datapoints, so missing data breaches. Three minutes ride over a stop-first redeploy.
+        simulator = f"simulator-{stage}"
+        self.simulator_alarm = cloudwatch.Alarm(
+            self,
+            "SimulatorDownAlarm",
+            alarm_name=f"simulator-down-{stage}",
+            alarm_description=f"Simulator service {simulator} has had no running task for 3 minutes",
+            metric=cloudwatch.Metric(
+                namespace="AWS/ECS",
+                metric_name="CPUUtilization",
+                dimensions_map={"ClusterName": simulator, "ServiceName": simulator},
+                statistic="SampleCount",
+                period=cdk.Duration.seconds(60),
+            ),
+            threshold=1,
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            evaluation_periods=3,
+            datapoints_to_alarm=3,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            # A deliberate stop (-c simulator=off) must not page the team.
+            actions_enabled=state == "ENABLED",
+        )
+        for alarm in (self.errors_alarm, self.simulator_alarm):
+            alarm.add_alarm_action(team_action)
+            alarm.add_ok_action(team_action)
+
+        cdk.CfnOutput(self, "TeamAlarmsTopicArn", value=self.team_topic.topic_arn)
+
+    def _email_topic(self, construct_id: str, topic_name: str, display_name: str, context_name: str) -> sns.Topic:
+        """A topic whose email subscriptions come only from the ``context_name`` allowlist; ``sns:Subscribe`` is
+        denied to every principal except the deploy role."""
+        topic = sns.Topic(self, construct_id, topic_name=topic_name, display_name=display_name)
+        for addr in emails(self.node.try_get_context(context_name), context_name):
+            topic.add_subscription(subs.EmailSubscription(addr))
+        topic.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="DenySubscribeExceptDeployRole",
+                effect=iam.Effect.DENY,
+                principals=[iam.AnyPrincipal()],
+                actions=["sns:Subscribe"],
+                resources=[topic.topic_arn],
+                conditions={
+                    "ArnNotLike": {
+                        "aws:PrincipalArn": self.format_arn(
+                            service="iam",
+                            region="",
+                            resource="role",
+                            resource_name=f"{DEPLOY_ROLE_PREFIX}{self.account}-{self.region}",
+                        )
+                    }
+                },
+            )
+        )
+        return topic
