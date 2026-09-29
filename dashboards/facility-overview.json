@@ -5,7 +5,7 @@
     "ongiiot",
     "__STAGE__"
   ],
-  "description": "Every pipe with its latest raw values and its trust scores (UX-DR1). Click a pipe to open pipe-detail. Provisioned by GrafanaStack-__STAGE__; edits are overwritten on deploy.",
+  "description": "Every pipe with its incident alert state, latest raw values and trust scores (UX-DR1). Click a pipe to open pipe-detail. Provisioned by GrafanaStack-__STAGE__; edits are overwritten on deploy.",
   "editable": false,
   "schemaVersion": 41,
   "timezone": "utc",
@@ -55,6 +55,132 @@
     },
     {
       "type": "stat",
+      "id": 6,
+      "title": "__PIPE_ID__ alert",
+      "description": "Detectors in the pipe's OPEN incident (derived/alert_state, written every minute by detection). Green: no incident. Red: an incident is open; the email and pipe-detail name its detectors.",
+      "datasource": {
+        "type": "grafana-iot-sitewise-datasource",
+        "uid": "__DS_UID__"
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 3
+      },
+      "links": [
+        {
+          "title": "Open pipe-detail for __PIPE_ID__",
+          "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "links": [
+            {
+              "title": "Open pipe-detail for __PIPE_ID__",
+              "url": "/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__&var-area=__AREA__&${__url_time_range}"
+            }
+          ],
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "no incident",
+                  "index": 0
+                },
+                "1": {
+                  "text": "incident: 1 detector",
+                  "index": 1
+                },
+                "2": {
+                  "text": "incident: 2 detectors",
+                  "index": 2
+                },
+                "3": {
+                  "text": "incident: 3 detectors",
+                  "index": 3
+                },
+                "4": {
+                  "text": "incident: 4 detectors",
+                  "index": 4
+                },
+                "5": {
+                  "text": "incident: 5 detectors",
+                  "index": 5
+                },
+                "6": {
+                  "text": "incident: 6 detectors",
+                  "index": 6
+                },
+                "7": {
+                  "text": "incident: 7 detectors",
+                  "index": 7
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "no data",
+                  "color": "text",
+                  "index": 8
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "orientation": "horizontal",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "alert_state",
+          "datasource": {
+            "type": "grafana-iot-sitewise-datasource",
+            "uid": "__DS_UID__"
+          },
+          "queryType": "PropertyValue",
+          "region": "default",
+          "propertyAlias": "${alias_root}/__AREA__/__PIPE_ID__/derived/alert_state"
+        }
+      ]
+    },
+    {
+      "type": "stat",
       "id": 3,
       "title": "__PIPE_ID__ (__AREA__)",
       "datasource": {
@@ -65,7 +191,7 @@
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 3
+        "y": 6
       },
       "links": [
         {
@@ -276,7 +402,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 9
+        "y": 12
       },
       "links": [
         {
@@ -477,7 +603,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 14
+        "y": 17
       },
       "links": [
         {

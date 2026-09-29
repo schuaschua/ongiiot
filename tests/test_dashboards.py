@@ -75,6 +75,18 @@ def test_overview_trust_prototype_uses_dq_min_threshold():
     assert proto["options"]["reduceOptions"]["calcs"] == ["lastNotNull"]
 
 
+def test_overview_alert_prototype_reads_alert_state():
+    """OG-24: one alert tile per pipe on derived/alert_state, green at 0 and red from 1, linking to pipe-detail."""
+    proto = pipe_protos()["__PIPE_ID__ alert"]
+    assert [t["propertyAlias"] for t in proto["targets"]] == ["${alias_root}/__AREA__/__PIPE_ID__/derived/alert_state"]
+    defaults = proto["fieldConfig"]["defaults"]
+    assert defaults["thresholds"]["steps"] == [{"color": "green", "value": None}, {"color": "red", "value": 1}]
+    assert proto["options"]["colorMode"] == "background" and proto["options"]["reduceOptions"]["calcs"] == ["lastNotNull"]
+    assert proto["links"][0]["url"].startswith("/d/pipe-detail__UID_SUFFIX__/pipe-detail?var-pipe_id=__PIPE_ID__")
+    # It sits at the top of the pipe block, above the raw-value tile.
+    assert proto["gridPos"]["y"] < pipe_protos()["__PIPE_ID__ (__AREA__)"]["gridPos"]["y"]
+
+
 def test_only_known_placeholders():
     known = {"__DS_UID__", "__ALIAS_ROOT__", "__UID_SUFFIX__", "__STAGE__", "__PIPE_ID__", "__AREA__", "__DQ_MIN__"}
     for name in ("pipe-detail", "facility-overview"):
