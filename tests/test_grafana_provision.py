@@ -167,10 +167,10 @@ def test_overview_queries_only_own_alias_root(stage, root, suffix):
     (alias_root,) = overview["templating"]["list"]
     assert alias_root["name"] == "alias_root" and alias_root["query"] == root
     aliases = [t["propertyAlias"] for p in overview["panels"] for t in p.get("targets", [])]
-    assert len(aliases) == 24 * 18 and all(a.startswith("${alias_root}/") for a in aliases)
+    assert len(aliases) == 24 * 19 and all(a.startswith("${alias_root}/") for a in aliases)
     assert all(t["datasource"]["uid"] == f"sitewise-{stage}" for p in overview["panels"] for t in p.get("targets", []))
     urls = [p["links"][0]["url"] for p in overview["panels"] if p.get("links")]
-    assert len(urls) == 24 * 3 and all(u.startswith(f"/d/pipe-detail{suffix}/pipe-detail?") for u in urls)
+    assert len(urls) == 24 * 4 and all(u.startswith(f"/d/pipe-detail{suffix}/pipe-detail?") for u in urls)
 
 
 def test_rerun_is_idempotent():
