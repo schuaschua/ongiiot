@@ -78,6 +78,13 @@ context:
 
 - Loopback 1 (Container Insights): a 10-line change re-derived from the amended plan. I reviewed its diff directly instead of running another lens pass, to save tokens given its size (owner's one-agent-at-a-time rule). 173 tests pass; synth exits 0.
 
+- Live check 2 on `poc-dj` (2026-09-29, deploy run 36535526237 from `107525b`):
+  - Container Insights was enabled on the cluster in place, and `RunningTaskCount` datapoints started about 4 minutes after the deploy.
+  - Detection's schedule was paused during the test (to avoid OG-26), and the simulator was scaled to 0 at 07:22:37Z.
+  - `simulator-down-poc-dj` went to ALARM at 07:31:07Z, **8.5 minutes later**, not about 4. It returned to OK at 07:32:15Z after the task was restored. The team topic published at 07:22 (OK), 07:31 (ALARM) and after the restore, so the CloudWatch → SNS path works under the topic policy.
+  - **Why it was slow:** with desired count 0, Container Insights also stops emitting `RunningTaskCount` (the last datapoint was 07:22), so the alarm again ran on missing data. The explicit 0 the plan assumed was never emitted in this test. The realistic failure (desired count 1, task crashing) was not reproduced; in that case the service should keep reporting.
+  - A single stopped task was replaced by ECS in under a minute, and the alarm stayed OK.
+
 ## Plan Change Log
 
 - 2026-09-29, loopback after the live check (owner chose option A). **Finding:** `AWS/ECS` `CPUUtilization` `SampleCount` stops being emitted at 0 tasks, and CloudWatch evaluated the missing data about 11 minutes late: ALARM at 06:34:21Z for an outage from 06:22:54Z to about 06:31Z. **Amended:** the simulator alarm uses Container Insights `RunningTaskCount` (Minimum < 1, 3 of 3 × 60 s), with Container Insights enabled on the simulator cluster. **Known-bad state avoided:** an alarm that only fires after recovery. **KEEP:** the team topic, `team_emails` parsing, the errors alarm, the CloudWatch publish statement, the switch-off behaviour, and the SimulatorStack name cross-check test.
