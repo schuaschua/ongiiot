@@ -26,7 +26,7 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    evidence_aliases}]``, ``suppressed: [{detector, pipe, reason, scope}]`` (a required sensor untrusted, or an ``outlier_peer`` feature skipped) and
    ``pass2_skipped``, ``source_outage``, ``incident_conflicts`` (pipes left to the next run), ``incident_ops`` (``opened``/``updated``/``closed``/``reopened``: ``[{pipe, incident_id}]``),
    ``alert_state`` (pipe -> detectors in its OPEN incident, pipes with none left out), ``notified``
-   (``[{pipe, incident_id, message_id}]``) and ``notify_failures`` (``[{pipe, incident_id, step, error}]``).
+   (``[{pipe, incident_id, message_id, link}]``, ``link`` the emailed Deep link v1) and ``notify_failures`` (``[{pipe, incident_id, step, error}]``).
 
 Reset event ``{"action": "reset"}`` (AD-15, sent by ``ops/reset.py``): ``run_id`` is the invocation time
 (``iso(now)``), and every pipe's OPEN incident is closed with ``closed_reason=reset`` by ``incidents.py``. It runs

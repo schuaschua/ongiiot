@@ -34,7 +34,9 @@ def test_new_incident_one_email_then_notified_at():
     (msg,) = rig.sns.published
     assert msg["TopicArn"] == TOPIC
     assert msg["Subject"] == f"[POC] Pipe P-007 incident {inc.incident_id}"
-    assert res.notified == [{"pipe": "P-007", "incident_id": inc.incident_id, "message_id": "msg-1"}]
+    link = rig.notifier.link(inc)
+    assert res.notified == [{"pipe": "P-007", "incident_id": inc.incident_id, "message_id": "msg-1", "link": link}]
+    assert msg["Message"].endswith(f"Evidence in Grafana: {link}")  # the emailed link, not a rebuild
     assert res.failures == []
     assert rig.items()["OPEN"]["notified_at"] == "2026-09-29T01:02:03.000Z"
     # the outbox mark does not touch last_run: the next run still updates the slot

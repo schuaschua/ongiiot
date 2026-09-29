@@ -156,6 +156,7 @@ def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
     assert msg["TopicArn"] == TOPIC and len(summary["notified"]) == 1
     link = msg["Message"].split("\n")[-1].split(": ", 1)[1]
     assert link.startswith(f"{NOTIFY_ENV['GRAFANA_URL']}/d/{NOTIFY_ENV['DASHBOARD_UID']}/")
+    assert summary["notified"][0]["link"] == link
 
 
 def test_reset_event_closes_incidents_without_a_detection_run(facility, monkeypatch):
