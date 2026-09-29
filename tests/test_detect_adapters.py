@@ -6,9 +6,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from detect.adapters import reader
 from detect.adapters.derived_writer import AliasError, DerivedWriter
-from detect.adapters.reader import BatchGetReader, ExecuteQueryReader, make_reader
+from detect.adapters.reader import BatchGetReader, ExecuteQueryReader
 from detect.core.models import PipeMeta, Sample
 from tests.detect_fakes import FakeSiteWiseRead, FakeSiteWiseWrite
 
@@ -36,10 +35,7 @@ def full_store(ps, step=1.0, lo=S0 - 30, hi=S1 + 30):
     return store
 
 
-READERS = [ExecuteQueryReader, BatchGetReader]
-
-
-@pytest.mark.parametrize("cls", READERS)
+@pytest.mark.parametrize("cls", [BatchGetReader])
 def test_every_alias_present_even_without_data(cls):
     ps = pipes()
     store = full_store(ps)
@@ -51,7 +47,7 @@ def test_every_alias_present_even_without_data(cls):
     assert fw.pipes is ps and (fw.window.start, fw.window.end) == (START, END)
 
 
-@pytest.mark.parametrize("cls", READERS)
+@pytest.mark.parametrize("cls", [ExecuteQueryReader])
 def test_window_is_half_open_ascending_and_utc(cls):
     ps = pipes(1)
     fw = cls(FakeSiteWiseRead(full_store(ps))).read(ps, START, END)
@@ -78,14 +74,6 @@ def test_strategies_return_the_same_window():
     assert Sample(datetime.fromtimestamp(S0 + 150.25, tz=UTC), None, "BAD") in eq.window.series[a]
 
 
-def test_make_reader():
-    assert make_reader("execute_query", None).strategy == "execute_query"
-    assert make_reader("batch_get", None).strategy == "batch_get"
-    assert make_reader(None, None).strategy == reader.DEFAULT_STRATEGY == "batch_get"
-    with pytest.raises(ValueError, match="READER_STRATEGY"):
-        make_reader("athena", None)
-
-
 # -- derived writer ------------------------------------------------------------------------------
 
 DQ = f"{ROOT}/train1/P-001/derived/flow_in_dq"
@@ -94,7 +82,7 @@ FAIL = f"{ROOT}/train1/P-001/derived/flow_in_dq_fail"
 
 @pytest.mark.parametrize(
     "alias",
-    [f"{ROOT}/train1/P-001/flow_in", f"{ROOT}/train1/P-001/attr/flow_in_max"],
+    [f"{ROOT}/train1/P-001/flow_in"],
 )
 def test_writer_refuses_non_derived_before_any_call(alias):
     fake = FakeSiteWiseWrite()

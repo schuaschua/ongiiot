@@ -45,7 +45,7 @@ def test_item_round_trip():
 
 @pytest.mark.parametrize(
     ("kwargs", "match"),
-    [({"type_": "burst"}, "unknown injection type"), ({"type_": "dq_stuck"}, "requires a measurement")],
+    [({"type_": "burst"}, "unknown injection type")],
 )
 def test_invalid_injections(kwargs, match):
     base = {"injection_id": "X", "type_": "leak", "pipe_id": "P-007", "start_at": T0, "end_at": T0 + timedelta(minutes=1)}

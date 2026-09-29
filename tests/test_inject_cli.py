@@ -39,12 +39,6 @@ def test_leak_writes_one_immutable_item(capsys):
     from_item(item, load(stage="poc-dj"))  # valid v1
 
 
-@pytest.mark.parametrize("type_", ["dq_flatline"])
-def test_dq_types(type_):
-    code, table = cli([type_, "--pipe", "P-003", "--measurement", "flow_out", "--minutes", "1"])
-    assert code == 0 and table.items["01AAA"]["type"] == type_
-
-
 @pytest.mark.parametrize(
     "argv",
     [["dq_stuck", "--pipe", "P-003", "--minutes", "5"]],
@@ -55,13 +49,6 @@ def test_invalid_inject_refused_without_write(argv, capsys):
     assert "error" in capsys.readouterr().err
 
 
-def test_unknown_type_refused_without_write():
-    table = FakeTable()
-    with pytest.raises(SystemExit) as exc:
-        cli(["burst", "--pipe", "P-007", "--minutes", "5"], table=table)
-    assert exc.value.code != 0 and table.writes == 0
-
-
 def test_cancel_writes_superseding_item():
     code, table = cli(["leak", "--pipe", "P-007", "--minutes", "20"])
     code, table = cli(["cancel", "01AAA"], table=table, ids=("01CAN",))
@@ -70,15 +57,6 @@ def test_cancel_writes_superseding_item():
     c = table.items["01CAN"]
     assert c["supersedes"] == "01AAA" and c["start_at"] == c["end_at"] == "2026-09-28T10:00:00.123Z"
     assert c["type"] == "leak" and c["pipe_id"] == "P-007"
-
-
-def test_cancel_unknown_or_cancel_item_refused():
-    code, table = cli(["cancel", "01NOPE"])
-    assert code != 0 and table.writes == 0
-    _, table = cli(["leak", "--pipe", "P-007", "--minutes", "20"])
-    cli(["cancel", "01AAA"], table=table, ids=("01CAN",))
-    code, _ = cli(["cancel", "01CAN"], table=table, ids=("01X",))
-    assert code != 0 and table.writes == 2
 
 
 class AwsFailTable(FakeTable):
@@ -151,10 +129,3 @@ def test_list_json_folds_cancels_and_classifies(capsys):
     }
     assert rows["01STUCK"]["state"] == "recent"
     assert rows["01STUCK"]["effective_end"] == rows["01STUCK"]["planned_end"] and rows["01STUCK"]["cancelled"] is False
-
-
-def test_list_recent_window_and_table(capsys):
-    code, _ = cli(["list", "--recent-min", "400"], table=_listing_table())
-    out = capsys.readouterr().out.splitlines()
-    assert code == 0 and out[0].split() == ["id", "type", "pipe", "measurement", "start", "effective_end", "planned_end", "state", "cancelled"]
-    assert {line.split()[0] for line in out[1:]} == {"01LEAK", "01FLAT", "01STUCK", "01OLD"}

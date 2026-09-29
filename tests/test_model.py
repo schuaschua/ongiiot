@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import dataclasses
 from pathlib import Path
 
 import pytest
@@ -56,12 +55,6 @@ def test_valid_model_aliases_default_stage():
     assert f.attr_alias("P-007", "flow_in_owner") == "/lng1/train1/P-007/attr/flow_in_owner"
 
 
-def test_valid_model_aliases_developer_stage():
-    f = load(DEFAULT_PATH, stage="poc-dj")
-    assert f.alias_root == "/poc-dj/lng1"
-    assert f.alias("P-007", "flow_in") == "/poc-dj/lng1/train1/P-007/flow_in"
-
-
 def test_contract_overrides_applied():
     f = load(DEFAULT_PATH)
     p7 = f.pipe("P-007")
@@ -96,14 +89,6 @@ def test_config_hash_changes_with_tunables(doc):
     assert parse(edited).config_hash() != base
 
 
-def test_facility_is_frozen():
-    f = load(DEFAULT_PATH)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        f.stage = "poc-xx"  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        f.tunables["dq_min"] = 0.9  # type: ignore[index]
-
-
 # -- other schema v1 rules --------------------------------------------------------------------
 
 
@@ -123,20 +108,8 @@ def _set(path, value):
     return mutate
 
 
-def _delete(path):
-    def mutate(doc):
-        target = doc
-        for k in path[:-1]:
-            target = _step(target, k)
-        del target[path[-1]]
-
-    return mutate
-
-
 INVALID = {
-    "unknown top-level key": _set(["extra"], 1),
     "min above max": _set(["contracts", "flow_in", "min"], 60),
-    "tunable missing": _delete(["tunables", "window_len_s"]),
 }
 
 

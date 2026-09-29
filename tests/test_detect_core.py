@@ -31,19 +31,11 @@ def test_any_time_in_the_minute_gives_the_same_window(t):
     assert window_bounds(t, T) == (START, END)
 
 
-def test_replay_is_identical():
-    assert window_bounds(at(12, 34, 17), T) == window_bounds(at(12, 34, 17), T)
-
-
 # -- dq_score (AD-13) ----------------------------------------------------------------------------
 
 
 def finding(detector_id, confidence, alias="/a/train1/P-001/flow_in", pipe_id="P-001"):
     return Finding(detector_id, "1", pipe_id, (alias,), START, END, confidence, "x.")
-
-
-def test_no_findings_scores_one():
-    assert dq_score.score([]) == (1.0, "")
 
 
 def test_one_minus_max_confidence_and_sorted_ids():

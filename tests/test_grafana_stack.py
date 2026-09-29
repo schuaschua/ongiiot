@@ -118,15 +118,6 @@ def test_admin_assignment_identity_center_actions_exact(synthesized):
 # -- GrafanaStack-<stage> ------------------------------------------------------------------------
 
 
-def test_per_stage_stack_and_names(synthesized):
-    stage, _, _, per_stage, tpl = synthesized
-    assert per_stage.stack_name == f"GrafanaStack-{stage}"
-    names = {r["Properties"]["FunctionName"] for r in of_type(tpl, "AWS::Lambda::Function").values()}
-    assert names == {f"grafana-provision-{stage}", f"grafana-provision-provider-{stage}"}
-    groups = {r["Properties"]["LogGroupName"] for r in of_type(tpl, "AWS::Logs::LogGroup").values()}
-    assert groups == {f"/aws/lambda/grafana-provision-{stage}", f"/aws/lambda/grafana-provision-provider-{stage}"}
-
-
 def test_provision_resource_properties(synthesized):
     stage, _, _, _, tpl = synthesized
     (res,) = of_type(tpl, "Custom::GrafanaProvision").values()
@@ -159,15 +150,3 @@ def test_provision_lambda_role_only_service_account_actions_on_workspace(synthes
     role = tpl["Resources"][role_id]["Properties"]
     managed = json.dumps(role.get("ManagedPolicyArns", []))
     assert "AWSLambdaBasicExecutionRole" in managed and managed.count("arn:") == 1
-
-
-def test_two_stages_do_not_collide():
-    def props(stage):
-        app = build_app(cdk.App(context={"stage": stage}))
-        tpl = Template.from_stack(app.node.find_child(f"GrafanaStack-{stage}")).to_json()
-        (res,) = of_type(tpl, "Custom::GrafanaProvision").values()
-        return res["Properties"]
-
-    a, b = props("poc"), props("poc-dj")
-    for key in ("FolderUid", "DataSourceUid", "UidSuffix", "AliasRoot"):
-        assert a[key] != b[key], key

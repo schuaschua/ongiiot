@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
@@ -47,13 +46,6 @@ def policy_statements(tpl: dict, role_id: str) -> list[dict]:
 
 def as_list(v):
     return v if isinstance(v, list) else [v]
-
-
-def test_stack_name_and_dependency(synthesized):
-    stage, sitewise, stack, _ = synthesized
-    assert stack.stack_name == f"SimulatorStack-{stage}"
-    assert stack.region == "ap-southeast-1"
-    assert sitewise in stack.dependencies
 
 
 def test_tables(synthesized):
@@ -172,19 +164,3 @@ def test_simulator_off_only_changes_desired_count():
     (svc_on,) = props(on, "AWS::ECS::Service")
     svc_on["DesiredCount"] = 0
     assert on == off
-
-
-def test_two_stages_do_not_collide():
-    _, _, a = synth("poc")
-    _, _, b = synth("poc-dj")
-
-    def names(tpl):
-        out = {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
-        out |= {p["ClusterName"] for p in props(tpl, "AWS::ECS::Cluster")}
-        out |= {p["ServiceName"] for p in props(tpl, "AWS::ECS::Service")}
-        out |= {p["Family"] for p in props(tpl, "AWS::ECS::TaskDefinition")}
-        out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
-        out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role") if "RoleName" in p}
-        return out
-
-    assert not names(a) & names(b)

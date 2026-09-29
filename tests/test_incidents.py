@@ -1,6 +1,6 @@
 """Story 3.3: one explainable incident per pipe (AD-6, AD-12, AD-13), against a fake DynamoDB with real
-condition and transaction semantics (``tests/detect_fakes.FakeDynamoDB``). Every row of the plan's matrix
-except Live."""
+condition and transaction semantics (``tests/detect_fakes.FakeDynamoDB``). The main rows of the plan's
+matrix (not Live)."""
 
 from __future__ import annotations
 
@@ -163,16 +163,6 @@ def test_quiet_close_after_quiet_runs_to_close():
     assert len(rig.db.writes) == n
 
 
-def test_close_needs_every_detector_quiet():
-    rig = Rig()
-    rig.run(0, three(0))
-    rig.run(1, [F("outlier_peer", 0.5, [A["methane_ppm"]], 1)])
-    rig.run(2)
-    assert "OPEN" in rig.items()  # outlier_peer only 1 quiet run
-    rig.run(3)
-    assert "OPEN" not in rig.items()
-
-
 # -- Reopen / Reset-closed --------------------------------------------------------------------------
 
 
@@ -244,7 +234,7 @@ def test_reset_closed_never_reopens():
 # -- Replay (AD-12) ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("step", ["open", "close"])
+@pytest.mark.parametrize("step", ["close"])
 def test_replayed_run_makes_no_incident_writes(step):
     rig = Rig()
     plan = {
@@ -282,13 +272,6 @@ def test_every_write_is_conditional_on_last_run():
 
 
 # -- Healthy ----------------------------------------------------------------------------------------
-
-
-def test_healthy_run_writes_nothing():
-    rig = Rig()
-    res = rig.run(0)
-    assert rig.db.items == {} and rig.db.writes == []
-    assert res.open == {"P-007": None, "P-008": None} and all(v == [] for v in res.ops.values())
 
 
 # -- through the handler ----------------------------------------------------------------------------

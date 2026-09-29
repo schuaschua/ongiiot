@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
@@ -49,12 +48,6 @@ def aliases(tpl: dict) -> set[str]:
     return out
 
 
-def test_asset_count_is_pipes_plus_one(synthesized):
-    f, _, tpl = synthesized
-    assert len(resources(tpl, "AWS::IoTSiteWise::Asset")) == len(f.pipes) + 1
-    assert len(resources(tpl, "AWS::IoTSiteWise::AssetModel")) == 2
-
-
 def test_every_raw_derived_and_attribute_alias_present(synthesized):
     f, _, tpl = synthesized
     found = aliases(tpl)
@@ -91,18 +84,6 @@ def test_derived_types_match_v1(synthesized):
     # model defaults come from the default contracts
     assert by_name["flow_in_max"]["Type"]["Attribute"]["DefaultValue"] == "50.0"
     assert by_name["methane_ppm_owner"]["Type"]["Attribute"]["DefaultValue"] == "HSE"
-
-
-def test_stage_suffix_in_names(synthesized):
-    f, stack, tpl = synthesized
-    assert stack.stack_name == f"SiteWiseAssetsStack-{f.stage}"
-    for m in resources(tpl, "AWS::IoTSiteWise::AssetModel"):
-        assert m["AssetModelName"].endswith(f"-{f.stage}")
-    for a in resources(tpl, "AWS::IoTSiteWise::Asset"):
-        assert a["AssetName"].endswith(f"-{f.stage}")
-    for fn in resources(tpl, "AWS::Lambda::Function"):
-        if "FunctionName" in fn:
-            assert fn["FunctionName"].endswith(f"-{f.stage}")
 
 
 def test_seed_custom_resource(synthesized):

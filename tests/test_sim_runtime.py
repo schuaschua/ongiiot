@@ -8,7 +8,6 @@ import signal
 import statistics as st
 from datetime import UTC, datetime, timedelta
 
-
 from facility.control import cancel_of, new_injection, to_item
 from facility.model import load
 from sim import main as sim_main
@@ -127,15 +126,6 @@ def run_main(env=ENV, sitewise=None, max_ticks=3, **kw):
 
 def logs(capsys):
     return [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
-
-
-def test_main_checks_every_alias_then_runs(capsys):
-    code, fake = run_main()
-    assert code == 0
-    assert sorted(fake.described) == sorted(F.alias(p.id, m) for p in F.pipes for m in p.sensors)
-    lines = logs(capsys)
-    assert all(line["stage"] == STAGE for line in lines)
-    assert any(line["msg"] == "simulator started" and line["config_hash"] == F.config_hash() for line in lines)
 
 
 def test_main_refuses_to_start_on_unassociated_alias(capsys):

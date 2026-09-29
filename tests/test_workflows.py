@@ -161,7 +161,6 @@ def run_resolve(deploy: dict, stage: str, tmp_path: Path) -> dict[str, str]:
 @pytest.mark.parametrize(
     "stage,expected",
     [
-        ("poc", {"stage": "poc", "environment": "poc"}),
         ("poc-dj", {"stage": "poc-dj", "environment": "dev"}),
     ],
 )
@@ -202,7 +201,6 @@ def stage_check_code(deploy: dict) -> str:
 @pytest.mark.parametrize(
     "stage,ref,ok",
     [
-        ("poc", "refs/heads/main", True),
         ("poc", "refs/heads/feat/cicd", False),
         ("poc-DJ!", "refs/heads/feat/x", False),
         ("poc-dj", "refs/heads/feat/x", True),

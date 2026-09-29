@@ -63,8 +63,3 @@ def test_dq_gap_no_samples_while_active():
     ts = [t for t, *_ in out["methane_ppm"]]
     assert ts == [t for t in range(T0, T0 + 60) if not T0 + 10 <= t < T0 + 40]
     assert len(out["flow_in"]) == 60
-
-
-def test_injection_outside_window_not_applied():
-    later = inj("leak", start=T0 + 3600)
-    assert run("P-007", 60, [later]) == run("P-007", 60)

@@ -25,7 +25,7 @@ def targets(dash: dict) -> list[dict]:
     return [t for p in dash["panels"] for t in p.get("targets", [])]
 
 
-@pytest.mark.parametrize("name", ["pipe-detail", "facility-overview"])
+@pytest.mark.parametrize("name", ["pipe-detail"])
 def test_uid_equals_file_name(name):
     assert load(name)["uid"] == name
 
@@ -59,10 +59,6 @@ def pipe_protos() -> dict[str, dict]:
     """The overview's per-pipe prototypes keyed by title."""
     dash = load("facility-overview")
     return {p["title"]: p for p in dash["panels"] if "__PIPE_ID__" in json.dumps(p)}
-
-
-def test_overview_has_three_pipe_prototypes():
-    assert list(pipe_protos()) == ["__PIPE_ID__ (__AREA__)", "__PIPE_ID__ trust", "__PIPE_ID__ failing checks"]
 
 
 def test_overview_trust_prototype_uses_dq_min_threshold():

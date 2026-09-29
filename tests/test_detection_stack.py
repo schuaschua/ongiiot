@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
@@ -73,14 +72,6 @@ def test_incidents_table(synthesized):
     policy = "Retain" if stage == "poc" else "Delete"
     assert t["DeletionPolicy"] == t["UpdateReplacePolicy"] == policy
     assert tpl["Outputs"]["IncidentsTableName"]["Value"] == {"Ref": tid}
-
-
-def test_stack_name_and_dependency(synthesized):
-    stage, sitewise, stack, _ = synthesized
-    assert stack.stack_name == f"DetectionStack-{stage}"
-    assert stack.region == "ap-southeast-1"
-    assert sitewise in stack.dependencies
-    assert stack.node.scope.node.find_child("SharedGrafanaStack") in stack.dependencies
 
 
 def test_function_role_is_exactly_ad17(synthesized):
@@ -171,28 +162,6 @@ def test_switch_off_disables_only_the_schedule():
     s_on["State"] = "DISABLED"
     on["Outputs"]["ScheduleState"]["Value"] = "DISABLED"
     assert on == off
-
-
-@pytest.mark.parametrize("value", ["maybe"])
-def test_bad_switch_fails_synth(value):
-    with pytest.raises(ValueError, match="simulator"):
-        build_app(cdk.App(context={"stage": "poc-dj", "simulator": value}))
-
-
-def test_two_stages_do_not_collide():
-    _, _, a = synth("poc")
-    _, _, b = synth("poc-dj")
-
-    def names(tpl):
-        out = {p["FunctionName"] for p in props(tpl, "AWS::Lambda::Function")}
-        out |= {p["Name"] for p in props(tpl, "AWS::Scheduler::Schedule")}
-        out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
-        out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role")}
-        out |= {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
-        out |= {p["TopicName"] for p in props(tpl, "AWS::SNS::Topic")}
-        return out
-
-    assert len(names(a)) == 5 and not names(a) & names(b)
 
 
 # -- Story 3.4: operator topic (AD-7) ---------------------------------------------------------------

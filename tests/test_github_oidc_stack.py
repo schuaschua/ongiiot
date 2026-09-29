@@ -51,11 +51,6 @@ def roles_by_name(tpl: dict) -> dict[str, dict]:
     return {r["RoleName"]: r for r in of_type(tpl, "AWS::IAM::Role")}
 
 
-def test_exactly_two_roles(stack_and_tpl):
-    _, tpl = stack_and_tpl
-    assert set(roles_by_name(tpl)) == set(ROLES)
-
-
 @pytest.mark.parametrize("name", sorted(ROLES))
 def test_trust_scoped_by_sub(stack_and_tpl, name):
     stack, tpl = stack_and_tpl

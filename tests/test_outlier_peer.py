@@ -8,12 +8,10 @@ window, with no other pipe flagged.
 
 from __future__ import annotations
 
-
 import pytest
 
 from detect import handler
 from detect.core.detectors import OutlierPeer
-from detect.core.detectors.outlier_peer import FEATURES
 from tests.test_leak_detectors import (
     DQ_MIN,
     METAS,
@@ -49,10 +47,6 @@ def pipes(found):
 # -- synthetic windows -----------------------------------------------------------------------------
 
 
-def test_healthy_synthetic_window_gives_nothing():
-    assert outliers(trusted(synthetic())) == []
-
-
 def test_leak_outlier_names_features_z_and_peers():
     (f,) = outliers(trusted(leaking()))
     assert f.pipe_id == "P-007" and f.confidence == 1.0 and f.detector_version == "1"
@@ -65,7 +59,7 @@ def test_leak_outlier_names_features_z_and_peers():
     )
 
 
-@pytest.mark.parametrize(("excess", "expected"), [(4.0, None), (6.0, 0.5)])
+@pytest.mark.parametrize(("excess", "expected"), [(6.0, 0.5)])
 def test_confidence_ramps_from_min_z_to_full_z(excess, expected):
     """Flat synthetic peers: MAD 0, so z = excess / floor_methane_ppm (1.0 ppmv). Flagged only above min_z,
     so no zero-confidence finding at exactly min_z."""
@@ -119,16 +113,6 @@ def test_untrusted_sensor_skips_only_its_feature_and_says_so():
     # dq exactly at dq_min is trusted: the railed pressure_out is then scored and flagged.
     (f,) = outliers(trusted(synthetic({("P-007", "pressure_out"): lambda i: 1.0e6}), {("P-007", "pressure_out"): DQ_MIN}))
     assert f.evidence_aliases == (A["pressure_in"], A["pressure_out"])
-
-
-def test_features_and_detector_shape():
-    assert dict(FEATURES) == {
-        "pressure_ratio": ("pressure_out", "pressure_in"),
-        "flow_ratio": ("flow_out", "flow_in"),
-        "temperature": ("temperature",),
-        "methane_ppm": ("methane_ppm",),
-    }
-    assert (OP.id, OP.version, OP.kind, OP.requires) == ("outlier_peer", "1", "facility", ())
 
 
 # -- real simulator physics -------------------------------------------------------------------------

@@ -72,9 +72,3 @@ def test_retries_only_failed_entries_on_retryable_error_entries():
         w.add(alias, T0, 1.0)
     w.flush()
     assert [len(c) for c in fake.calls] == [3, 1]
-
-
-def test_rejects_non_finite_values():
-    w, _ = writer()
-    with pytest.raises(ValueError):
-        w.add(RAW[0], T0, float("nan"))

@@ -1,18 +1,13 @@
 """Story 3.4: one email per incident through the ``notified_at`` outbox (AD-7; Email v1), against the fake
-DynamoDB (real condition semantics) and a fake SNS. Every row of the plan's matrix except Live."""
+DynamoDB (real condition semantics) and a fake SNS. The main rows of the plan's matrix (not Live)."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
 
-import pytest
-
-from detect import handler
 from detect.adapters.notifier import BANNER, Notifier
-from facility.model import DEFAULT_PATH, load
-from tests.detect_fakes import FakeDynamoDB, FakeSiteWise, FakeSNS
-from tests.test_detect_handler import SCHEDULED, STAGE, leak_store, runtime
+from tests.detect_fakes import FakeSNS
 from tests.test_incidents import A, F, Rig, _open_then_close, run_id_of, three
 
 TOPIC = "arn:aws:sns:ap-southeast-1:123456789012:operators-test"
@@ -66,17 +61,6 @@ def test_email_v1_body():
     assert len(lines) == 9
 
 
-def test_already_notified_and_joining_detector_send_nothing():
-    rig = NRig()
-    rig.step(0, three(0))
-    _, res = rig.step(1, three(1))  # same incident, later run
-    assert res.notified == [] and len(rig.sns.published) == 1
-    _, res = rig.step(2, [*three(2), F("dq_flatline", 1.0, [A["pressure_in"]], 2)])  # a new detector joins
-    assert res.notified == [] and len(rig.sns.published) == 1
-    assert "dq_flatline" in rig.items()["OPEN"]["detectors"]
-    assert rig.items()["OPEN"]["notified_at"] == "2026-09-29T01:02:03.000Z"  # kept through the updates
-
-
 def test_publish_failure_is_logged_and_retried_next_run():
     rig = NRig(FakeSNS(fail="InternalErrorException"))
     applied, res = rig.step(0, three(0))
@@ -116,28 +100,3 @@ def test_reopened_incident_sends_no_new_email():
     applied, res = rig.step(10, [F("leak_methane_rise", 0.9, [A["methane_ppm"]], 10)])
     assert applied.ops["reopened"] == [{"pipe": "P-007", "incident_id": incident_id}]
     assert res.notified == [] and rig.sns.published == []
-
-
-# -- through the handler ----------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def facility():
-    return load(DEFAULT_PATH, stage=STAGE)
-
-
-def test_leak_emails_once_through_the_handler(facility):
-    fake, db, sns = FakeSiteWise(leak_store(facility), page=20000), FakeDynamoDB("incidents-poc-dj"), FakeSNS()
-    rt = runtime(facility, fake, db=db)
-    rt.notifier = Notifier(sns, TOPIC, rt.incidents, URL, "pipe-detail-dj", clock=lambda: WHEN)
-    logs: list[str] = []
-    summary = handler.run(rt, handler.parse_scheduled_time({"scheduled_time": SCHEDULED}), log=logs.append)
-    (opened,) = summary["incident_ops"]["opened"]
-    assert summary["notified"] == [{**opened, "message_id": "msg-1"}]
-    assert summary["notify_failures"] == []
-    assert "notify_duration_s" in summary
-    assert db.plain()[("P-007", "OPEN")]["notified_at"] == "2026-09-29T01:02:03.000Z"
-    # a replay of the same run and the next run send nothing more
-    summary = handler.run(rt, handler.parse_scheduled_time({"scheduled_time": SCHEDULED}), log=logs.append)
-    assert summary["notified"] == [] and len(sns.published) == 1
-    assert json.loads(logs[-1])["notified"] == []

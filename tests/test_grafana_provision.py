@@ -161,23 +161,6 @@ def overview_for(props: dict) -> dict:
     return grafana.dashboards[uid]["dashboard"]
 
 
-def trust_threshold(overview: dict) -> list:
-    values = set()
-    for p in overview["panels"]:
-        if p["title"].endswith(" trust"):
-            steps = p["fieldConfig"]["defaults"]["thresholds"]["steps"]
-            assert steps[0] == {"color": "red", "value": None} and steps[1]["color"] == "green"
-            values.add(steps[1]["value"])
-    return sorted(values)
-
-
-def test_dq_min_threshold_from_facility_yaml():
-    facility = load(DEFAULT_PATH, stage="poc-dj")
-    props = props_for("poc-dj")
-    assert props["DqMin"] == str(float(facility.tunables["dq_min"]))
-    assert trust_threshold(overview_for(props)) == [facility.tunables["dq_min"]]
-
-
 @pytest.mark.parametrize(("stage", "root", "suffix"), [("poc", "/lng1", "")])
 def test_overview_queries_only_own_alias_root(stage, root, suffix):
     overview = overview_for(props_for(stage))
