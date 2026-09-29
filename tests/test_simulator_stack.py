@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import os
-
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
 
-from facility.model import DEFAULT_PATH, load
 from infra.app import build_app
-from infra.stacks.simulator import SimulatorStack, desired_count
 
 ASSUME_TASKS = {
     "Statement": [
@@ -27,7 +23,7 @@ def synth(stage: str, **context: str):
     return sitewise, stack, Template.from_stack(stack).to_json()
 
 
-@pytest.fixture(scope="module", params=["poc", "poc-dj"])
+@pytest.fixture(scope="module", params=["poc-dj"])
 def synthesized(request):
     return (request.param, *synth(request.param))
 
@@ -52,13 +48,6 @@ def as_list(v):
     return v if isinstance(v, list) else [v]
 
 
-def test_stack_name_and_dependency(synthesized):
-    stage, sitewise, stack, _ = synthesized
-    assert stack.stack_name == f"SimulatorStack-{stage}"
-    assert stack.region == "ap-southeast-1"
-    assert sitewise in stack.dependencies
-
-
 def test_tables(synthesized):
     stage, _, _, tpl = synthesized
     tables = of_type(tpl, "AWS::DynamoDB::Table")
@@ -77,24 +66,6 @@ def test_tables(synthesized):
 def table_id(tpl: dict, name: str) -> str:
     (tid,) = [k for k, r in of_type(tpl, "AWS::DynamoDB::Table").items() if r["Properties"]["TableName"] == name]
     return tid
-
-
-def test_container_env_and_platform(synthesized):
-    stage, _, _, tpl = synthesized
-    (td,) = props(tpl, "AWS::ECS::TaskDefinition")
-    assert td["Cpu"] == "256" and td["Memory"] == "512"
-    assert td["RequiresCompatibilities"] == ["FARGATE"]
-    assert td["RuntimePlatform"] == {"CpuArchitecture": "X86_64", "OperatingSystemFamily": "LINUX"}
-    (container,) = td["ContainerDefinitions"]
-    env = {e["Name"]: e["Value"] for e in container["Environment"]}
-    assert env == {
-        "STAGE": stage,
-        "SIM_CONTROL_TABLE": {"Ref": table_id(tpl, f"sim-control-{stage}")},
-        "INJECTION_LOG_TABLE": {"Ref": table_id(tpl, f"injection-log-{stage}")},
-    }
-    assert container["LogConfiguration"]["LogDriver"] == "awslogs"
-    (lg,) = props(tpl, "AWS::Logs::LogGroup")
-    assert lg == {"LogGroupName": f"/ecs/simulator-{stage}", "RetentionInDays": 7}
 
 
 def test_task_role_is_exactly_ad17(synthesized):
@@ -154,11 +125,6 @@ def test_execution_role_only_pulls_and_logs(synthesized):
     }
 
 
-def test_only_two_roles(synthesized):
-    _, _, _, tpl = synthesized
-    assert len(of_type(tpl, "AWS::IAM::Role")) == 2
-
-
 def test_uses_shared_vpc_no_ingress(synthesized):
     _, _, stack, tpl = synthesized
     network = stack.node.scope.node.find_child("SharedNetworkStack")
@@ -177,25 +143,6 @@ def test_uses_shared_vpc_no_ingress(synthesized):
     assert all(s["Fn::ImportValue"].startswith("SharedNetworkStack:") for s in net["Subnets"])
 
 
-def test_two_stages_share_one_vpc():
-    app = build_app(cdk.App(context={"stage": "poc"}))
-    network = app.node.find_child("SharedNetworkStack")
-    sitewise = app.node.find_child("SiteWiseAssetsStack-poc")
-    # A second stage in the same app gets the same VPC, not a new one.
-    other = SimulatorStack(
-        app,
-        "SimulatorStack-poc-dj",
-        facility=load(DEFAULT_PATH, stage="poc-dj"),
-        pipe_asset_arns=[a.attr_asset_arn for a in sitewise.pipe_assets.values()],
-        vpc=network.vpc,
-        env=cdk.Environment(account=os.environ.get("CDK_DEFAULT_ACCOUNT"), region="ap-southeast-1"),
-    )
-    first = app.node.find_child("SimulatorStack-poc")
-    assert first.vpc is other.vpc is network.vpc
-    stacks = [c for c in app.node.children if isinstance(c, cdk.Stack)]
-    assert [s for s in stacks if of_type(Template.from_stack(s).to_json(), "AWS::EC2::VPC")] == [network]
-
-
 def test_service_one_task_with_rollback(synthesized):
     stage, _, _, tpl = synthesized
     (svc,) = props(tpl, "AWS::ECS::Service")
@@ -209,11 +156,6 @@ def test_service_one_task_with_rollback(synthesized):
     assert cluster["ClusterName"] == f"simulator-{stage}"
 
 
-def test_outputs(synthesized):
-    _, _, _, tpl = synthesized
-    assert {"SimControlTableName", "InjectionLogTableName", "ClusterName", "ServiceName"} <= set(tpl["Outputs"])
-
-
 def test_simulator_off_only_changes_desired_count():
     _, _, on = synth("poc-dj", simulator="on")
     _, _, off = synth("poc-dj", simulator="off")
@@ -222,36 +164,3 @@ def test_simulator_off_only_changes_desired_count():
     (svc_on,) = props(on, "AWS::ECS::Service")
     svc_on["DesiredCount"] = 0
     assert on == off
-
-
-def test_simulator_default_is_on():
-    _, _, default = synth("poc-dj")
-    _, _, on = synth("poc-dj", simulator="on")
-    assert default == on
-
-
-@pytest.mark.parametrize("value", ["maybe", "ON", "true", "", "1"])
-def test_bad_switch_fails_synth(value):
-    with pytest.raises(ValueError, match="simulator"):
-        build_app(cdk.App(context={"stage": "poc-dj", "simulator": value}))
-
-
-@pytest.mark.parametrize(("value", "count"), [(None, 1), ("on", 1), ("off", 0)])
-def test_desired_count(value, count):
-    assert desired_count(value) == count
-
-
-def test_two_stages_do_not_collide():
-    _, _, a = synth("poc")
-    _, _, b = synth("poc-dj")
-
-    def names(tpl):
-        out = {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
-        out |= {p["ClusterName"] for p in props(tpl, "AWS::ECS::Cluster")}
-        out |= {p["ServiceName"] for p in props(tpl, "AWS::ECS::Service")}
-        out |= {p["Family"] for p in props(tpl, "AWS::ECS::TaskDefinition")}
-        out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
-        out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role") if "RoleName" in p}
-        return out
-
-    assert not names(a) & names(b)

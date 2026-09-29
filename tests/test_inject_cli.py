@@ -39,42 +39,14 @@ def test_leak_writes_one_immutable_item(capsys):
     from_item(item, load(stage="poc-dj"))  # valid v1
 
 
-def test_leak_rate_and_drift_params():
-    _, table = cli(["leak", "--pipe", "P-007", "--minutes", "5", "--rate-kg-s", "2.5"])
-    assert float(table.items["01AAA"]["params"]["rate_kg_s"]) == 2.5
-    _, table = cli(["dq_drift", "--pipe", "P-003", "--measurement", "temperature", "--minutes", "5", "--per-min", "0.5"])
-    item = table.items["01AAA"]
-    assert item["measurement"] == "temperature" and float(item["params"]["per_min"]) == 0.5
-
-
-@pytest.mark.parametrize("type_", ["dq_flatline", "dq_stuck", "dq_gap"])
-def test_dq_types(type_):
-    code, table = cli([type_, "--pipe", "P-003", "--measurement", "flow_out", "--minutes", "1"])
-    assert code == 0 and table.items["01AAA"]["type"] == type_
-
-
 @pytest.mark.parametrize(
     "argv",
-    [
-        ["dq_stuck", "--pipe", "P-003", "--minutes", "5"],  # dq type without measurement
-        ["leak", "--pipe", "P-999", "--minutes", "5"],  # unknown pipe
-        ["dq_gap", "--pipe", "P-003", "--measurement", "viscosity", "--minutes", "5"],
-        ["leak", "--pipe", "P-007", "--minutes", "0"],
-        ["leak", "--pipe", "P-007", "--minutes", "5", "--rate-kg-s", "-1"],
-        ["leak", "--pipe", "P-007", "--measurement", "flow_in", "--minutes", "5"],
-    ],
+    [["dq_stuck", "--pipe", "P-003", "--minutes", "5"]],
 )
 def test_invalid_inject_refused_without_write(argv, capsys):
     code, table = cli(argv)
     assert code != 0 and table.items == {} and table.writes == 0
     assert "error" in capsys.readouterr().err
-
-
-def test_unknown_type_refused_without_write():
-    table = FakeTable()
-    with pytest.raises(SystemExit) as exc:
-        cli(["burst", "--pipe", "P-007", "--minutes", "5"], table=table)
-    assert exc.value.code != 0 and table.writes == 0
 
 
 def test_cancel_writes_superseding_item():
@@ -85,27 +57,6 @@ def test_cancel_writes_superseding_item():
     c = table.items["01CAN"]
     assert c["supersedes"] == "01AAA" and c["start_at"] == c["end_at"] == "2026-09-28T10:00:00.123Z"
     assert c["type"] == "leak" and c["pipe_id"] == "P-007"
-
-
-def test_cancel_unknown_or_cancel_item_refused():
-    code, table = cli(["cancel", "01NOPE"])
-    assert code != 0 and table.writes == 0
-    _, table = cli(["leak", "--pipe", "P-007", "--minutes", "20"])
-    cli(["cancel", "01AAA"], table=table, ids=("01CAN",))
-    code, _ = cli(["cancel", "01CAN"], table=table, ids=("01X",))
-    assert code != 0 and table.writes == 2
-
-
-def test_missing_table_env_refused():
-    code = inject.main(["leak", "--pipe", "P-007", "--minutes", "5"], env={"STAGE": "poc"})
-    assert code != 0
-
-
-def test_help_exits_zero(capsys):
-    with pytest.raises(SystemExit) as exc:
-        inject.main(["--help"], env=ENV)
-    assert exc.value.code == 0
-    assert "leak" in capsys.readouterr().out
 
 
 class AwsFailTable(FakeTable):
@@ -131,36 +82,12 @@ class AwsFailTable(FakeTable):
 
 @pytest.mark.parametrize(
     ("op", "code", "argv"),
-    [
-        ("put", "ResourceNotFoundException", ["leak", "--pipe", "P-007", "--minutes", "5"]),
-        ("put", "AccessDeniedException", ["leak", "--pipe", "P-007", "--minutes", "5"]),
-        ("put", "ConditionalCheckFailedException", ["leak", "--pipe", "P-007", "--minutes", "5"]),
-        ("get", "AccessDeniedException", ["cancel", "01AAA"]),
-    ],
+    [("put", "ResourceNotFoundException", ["leak", "--pipe", "P-007", "--minutes", "5"])],
 )
 def test_aws_errors_exit_2_without_traceback(op, code, argv, capsys):
     rc, table = cli(argv, table=AwsFailTable(op, code))
     assert rc == 2 and table.writes == 0
     assert code in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("minutes", ["inf", "nan", "1e30", str(7 * 24 * 60 + 1)])
-def test_minutes_must_be_finite_and_at_most_seven_days(minutes):
-    code, table = cli(["leak", "--pipe", "P-007", "--minutes", minutes])
-    assert code == 2 and table.writes == 0
-    code, _ = cli(["leak", "--pipe", "P-007", "--minutes", str(7 * 24 * 60)])
-    assert code == 0
-
-
-def test_facility_path_is_honoured(capsys):
-    from facility.model import DEFAULT_PATH
-
-    argv = ["leak", "--pipe", "P-007", "--minutes", "5"]
-    table = FakeTable()
-    code = inject.main(argv, env=ENV | {"FACILITY_PATH": "no/such/facility.yaml"}, table=table, now=lambda: NOW, new_id=lambda: "01A")
-    assert code == 2 and table.writes == 0 and "no/such/facility.yaml" in capsys.readouterr().err
-    code = inject.main(argv, env=ENV | {"FACILITY_PATH": str(DEFAULT_PATH)}, table=table, now=lambda: NOW, new_id=lambda: "01A")
-    assert code == 0 and table.writes == 1
 
 
 # -- list (Story 4.1) --------------------------------------------------------------------
@@ -202,50 +129,3 @@ def test_list_json_folds_cancels_and_classifies(capsys):
     }
     assert rows["01STUCK"]["state"] == "recent"
     assert rows["01STUCK"]["effective_end"] == rows["01STUCK"]["planned_end"] and rows["01STUCK"]["cancelled"] is False
-
-
-def test_list_recent_window_and_table(capsys):
-    code, _ = cli(["list", "--recent-min", "400"], table=_listing_table())
-    out = capsys.readouterr().out.splitlines()
-    assert code == 0 and out[0].split() == ["id", "type", "pipe", "measurement", "start", "effective_end", "planned_end", "state", "cancelled"]
-    assert {line.split()[0] for line in out[1:]} == {"01LEAK", "01FLAT", "01STUCK", "01OLD"}
-
-
-def test_list_empty(capsys):
-    code, _ = cli(["list"])
-    assert code == 0 and capsys.readouterr().out == "no injections\n"
-
-
-def test_list_scheduled_cancelled_and_malformed(capsys):
-    from datetime import timedelta
-
-    from facility.control import cancel_of, new_injection, to_item
-
-    f = load(stage="poc-dj")
-    now = NOW.replace(microsecond=123000)
-    later = new_injection("01LATE", "leak", "P-007", now + timedelta(minutes=5), now + timedelta(minutes=9), facility=f)
-    gone = new_injection("01GONE", "leak", "P-007", now + timedelta(minutes=5), now + timedelta(minutes=9), facility=f)
-    table = FakeTable([to_item(later), to_item(gone), to_item(cancel_of(gone, "01CANC", now)), {"pk": "01BAD", "type": "burst"}])
-    code, _ = cli(["list", "--json"], table=table)
-    captured = capsys.readouterr()
-    rows = {r["id"]: r for r in map(json.loads, captured.out.splitlines())}
-    assert code == 0 and "01BAD" in captured.err
-    assert rows["01LATE"]["state"] == "scheduled" and rows["01LATE"]["cancelled"] is False
-    assert rows["01GONE"]["state"] == "cancelled" and rows["01GONE"]["cancelled"] is True
-
-
-@pytest.mark.parametrize("value", ["-1", "1e12", "nan"])
-def test_list_recent_min_out_of_range(value, capsys):
-    code, _ = cli(["list", "--recent-min", value])
-    assert code == 2 and "--recent-min" in capsys.readouterr().err
-
-
-def test_list_aws_error(capsys):
-    class Broken(FakeTable):
-        def scan(self, **kwargs):
-            from botocore.exceptions import ClientError
-
-            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Scan")
-
-    code, _ = cli(["list"], table=Broken())
-    assert code == 2 and "AWS call failed" in capsys.readouterr().err

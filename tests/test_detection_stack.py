@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
-
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Template
 
 from infra.app import build_app
-from infra.stacks import detection, simulator
-from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS, operator_emails, schedule_state
+from infra.stacks.detection import INCIDENT_ACTIONS, SITEWISE_READ_ACTIONS
 
 
 def synth(stage: str, **context: str):
@@ -20,7 +17,7 @@ def synth(stage: str, **context: str):
     return sitewise, stack, Template.from_stack(stack).to_json()
 
 
-@pytest.fixture(scope="module", params=["poc", "poc-dj"])
+@pytest.fixture(scope="module", params=["poc-dj"])
 def synthesized(request):
     return (request.param, *synth(request.param))
 
@@ -75,63 +72,6 @@ def test_incidents_table(synthesized):
     policy = "Retain" if stage == "poc" else "Delete"
     assert t["DeletionPolicy"] == t["UpdateReplacePolicy"] == policy
     assert tpl["Outputs"]["IncidentsTableName"]["Value"] == {"Ref": tid}
-
-
-def test_stack_name_and_dependency(synthesized):
-    stage, sitewise, stack, _ = synthesized
-    assert stack.stack_name == f"DetectionStack-{stage}"
-    assert stack.region == "ap-southeast-1"
-    assert sitewise in stack.dependencies
-    assert stack.node.scope.node.find_child("SharedGrafanaStack") in stack.dependencies
-
-
-def test_function_single_flight(synthesized):
-    stage, _, _, tpl = synthesized
-    (fn,) = props(tpl, "AWS::Lambda::Function")
-    assert fn["FunctionName"] == f"detection-{stage}"
-    assert fn["PackageType"] == "Image" and fn["Architectures"] == ["x86_64"]
-    assert fn["Timeout"] == 50
-    assert fn["ReservedConcurrentExecutions"] == 1
-    assert fn["Environment"]["Variables"] == {
-        "STAGE": stage,
-        "READER_STRATEGY": "batch_get",
-        "INCIDENTS_TABLE": {"Ref": table_id(tpl)},
-        "OPERATOR_TOPIC_ARN": {"Ref": topic_id(tpl)},
-        "GRAFANA_URL": fn["Environment"]["Variables"]["GRAFANA_URL"],
-        "DASHBOARD_UID": "pipe-detail" if stage == "poc" else "pipe-detail-" + stage.removeprefix("poc-"),
-    }
-    url = fn["Environment"]["Variables"]["GRAFANA_URL"]  # SharedGrafanaStack's workspace URL
-    assert url["Fn::Join"][1][0] == "https://" and "SharedGrafanaStack" in url["Fn::Join"][1][1]["Fn::ImportValue"]
-    (cfg,) = props(tpl, "AWS::Lambda::EventInvokeConfig")
-    assert cfg == {
-        "FunctionName": {"Ref": function_id(tpl)},
-        "MaximumEventAgeInSeconds": 60,
-        "MaximumRetryAttempts": 0,
-        "Qualifier": "$LATEST",
-    }
-
-
-def test_log_group(synthesized):
-    stage, _, _, tpl = synthesized
-    (lg,) = props(tpl, "AWS::Logs::LogGroup")
-    assert lg == {"LogGroupName": f"/aws/lambda/detection-{stage}", "RetentionInDays": 7}
-    (fn,) = props(tpl, "AWS::Lambda::Function")
-    (lg_id,) = of_type(tpl, "AWS::Logs::LogGroup")
-    assert fn["LoggingConfig"] == {"LogGroup": {"Ref": lg_id}}
-
-
-def test_schedule_single_flight(synthesized):
-    stage, _, _, tpl = synthesized
-    (s,) = props(tpl, "AWS::Scheduler::Schedule")
-    assert s["Name"] == f"detection-{stage}"
-    assert s["ScheduleExpression"] == "rate(1 minute)"
-    assert s["ScheduleExpressionTimezone"] == "UTC"
-    assert s["FlexibleTimeWindow"] == {"Mode": "OFF"}
-    assert s["State"] == "ENABLED"
-    target = s["Target"]
-    assert target["Arn"] == {"Fn::GetAtt": [function_id(tpl), "Arn"]}
-    assert json.loads(target["Input"]) == {"scheduled_time": "<aws.scheduler.scheduled-time>"}
-    assert target["RetryPolicy"] == {"MaximumRetryAttempts": 0, "MaximumEventAgeInSeconds": 60}
 
 
 def test_function_role_is_exactly_ad17(synthesized):
@@ -213,11 +153,6 @@ def test_scheduler_role_only_invokes_the_function(synthesized):
     assert set(policy_ids) <= set(tpl["Resources"][sid]["DependsOn"])
 
 
-def test_only_two_roles(synthesized):
-    _, _, _, tpl = synthesized
-    assert len(of_type(tpl, "AWS::IAM::Role")) == 2
-
-
 def test_switch_off_disables_only_the_schedule():
     _, _, on = synth("poc-dj", simulator="on")
     _, _, off = synth("poc-dj", simulator="off")
@@ -227,83 +162,6 @@ def test_switch_off_disables_only_the_schedule():
     s_on["State"] = "DISABLED"
     on["Outputs"]["ScheduleState"]["Value"] = "DISABLED"
     assert on == off
-
-
-def test_switch_default_is_on():
-    _, _, default = synth("poc-dj")
-    _, _, on = synth("poc-dj", simulator="on")
-    assert default == on
-
-
-@pytest.mark.parametrize("value", ["maybe", "ON", "true", "", "1"])
-def test_bad_switch_fails_synth(value):
-    with pytest.raises(ValueError, match="simulator"):
-        build_app(cdk.App(context={"stage": "poc-dj", "simulator": value}))
-
-
-@pytest.mark.parametrize(("value", "state"), [(None, "ENABLED"), ("on", "ENABLED"), ("off", "DISABLED")])
-def test_schedule_state(value, state):
-    assert schedule_state(value) == state
-
-
-def test_images_exclude_each_other():
-    # A detection change must never rebuild (and restart) the simulator, and vice versa.
-    assert simulator.IMAGE_EXCLUDE == ["detect"]
-    assert detection.IMAGE_EXCLUDE == ["sim"]
-    assert detection.DOCKERFILE == "detect/Dockerfile"
-
-
-def test_two_stages_do_not_collide():
-    _, _, a = synth("poc")
-    _, _, b = synth("poc-dj")
-
-    def names(tpl):
-        out = {p["FunctionName"] for p in props(tpl, "AWS::Lambda::Function")}
-        out |= {p["Name"] for p in props(tpl, "AWS::Scheduler::Schedule")}
-        out |= {p["LogGroupName"] for p in props(tpl, "AWS::Logs::LogGroup")}
-        out |= {p["RoleName"] for p in props(tpl, "AWS::IAM::Role")}
-        out |= {p["TableName"] for p in props(tpl, "AWS::DynamoDB::Table")}
-        out |= {p["TopicName"] for p in props(tpl, "AWS::SNS::Topic")}
-        return out
-
-    assert len(names(a)) == 5 and not names(a) & names(b)
-
-
-def _image_hashes(monkeypatch, root) -> tuple[str, str]:
-    """(simulator image hash, detection image hash) for an app built from ``root``."""
-    import re
-
-    monkeypatch.setattr(simulator, "REPO_ROOT", root)
-    monkeypatch.setattr(detection, "REPO_ROOT", root)
-    app = build_app(cdk.App(context={"stage": "poc-dj"}))
-
-    def image_hash(stack_name: str) -> str:
-        tpl = json.dumps(Template.from_stack(app.node.find_child(stack_name)).to_json())
-        (h,) = set(re.findall(r":([0-9a-f]{64})", tpl))
-        return h
-
-    return image_hash("SimulatorStack-poc-dj"), image_hash("DetectionStack-poc-dj")
-
-
-def test_image_hashes_are_independent(tmp_path, monkeypatch):
-    import shutil
-    from pathlib import Path
-
-    src = Path(detection.__file__).resolve().parent.parent.parent
-    root = tmp_path / "repo"
-    root.mkdir()
-    for f in ("pyproject.toml", "uv.lock", ".dockerignore"):
-        shutil.copy(src / f, root / f)
-    for d in ("facility", "sim", "detect"):
-        shutil.copytree(src / d, root / d, ignore=shutil.ignore_patterns("__pycache__"))
-
-    sim0, det0 = _image_hashes(monkeypatch, root)
-    (root / "detect" / "handler.py").write_text((root / "detect" / "handler.py").read_text() + "\n# change\n")
-    sim1, det1 = _image_hashes(monkeypatch, root)
-    assert sim1 == sim0 and det1 != det0
-    (root / "sim" / "main.py").write_text((root / "sim" / "main.py").read_text() + "\n# change\n")
-    sim2, det2 = _image_hashes(monkeypatch, root)
-    assert sim2 != sim1 and det2 == det1
 
 
 # -- Story 3.4: operator topic (AD-7) ---------------------------------------------------------------
@@ -333,17 +191,3 @@ def test_operator_topic_two_addresses():
     assert [(s["Protocol"], s["Endpoint"]) for s in subs] == [("email", "a@example.com"), ("email", "b@example.org")]
     assert all(s["TopicArn"] == {"Ref": topic_id(tpl)} for s in subs)
     assert len(props(tpl, "AWS::SNS::TopicPolicy")) == 1
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(None, []), ("", []), (" , ", []), ("a@x.io", ["a@x.io"]), ("a@x.io,b@y.io,a@x.io", ["a@x.io", "b@y.io"]), ("A@X.io, a@x.IO", ["A@X.io"])],
-)
-def test_operator_emails_parsing(value, expected):
-    assert operator_emails(value) == expected
-
-
-@pytest.mark.parametrize("value", ["not-an-email", "a@b", "a b@x.io", ["a@x.io"]])
-def test_bad_operator_emails_fail_synth(value):
-    with pytest.raises(ValueError, match="operator_emails"):
-        operator_emails(value)

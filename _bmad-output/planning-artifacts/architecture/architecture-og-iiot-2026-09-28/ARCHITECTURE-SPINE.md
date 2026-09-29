@@ -7,7 +7,7 @@ paradigm: 'pipes-and-filters pipeline; hexagonal detection core'
 scope: '4-day POC: simulated LNG pipe sensor stream on AWS, sensor data quality, leak and outlier detection, explainable per-pipe incidents, email to operator role'
 status: final
 created: '2026-09-28'
-updated: '2026-09-28'
+updated: '2026-09-29'
 binds: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-5, CAP-6, CAP-7]
 sources:
   - ../../../specs/spec-og-iiot/SPEC.md
@@ -210,7 +210,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
   - Provisioning runs **during** `cdk deploy` (amended 2026-09-28, was "after"): a custom resource (`infra/stacks/grafana_provision.py`, handler `infra/lambdas/grafana_provision/`) mints a service-account token of at most 15 minutes, pins the SiteWise plugin 2.6.3 (best effort; the running version is a stack output), upserts data source and dashboards through the Grafana HTTP API, and deletes the token. The CI deploy role and its trust are unchanged. Grafana access is assigned in code (`ADMIN_USER_IDS`, `grafana:UpdatePermissions`).
   - Deploys run only in GitHub Actions (`.github/workflows/deploy.yml`, runbook `docs/ci-cd.md`) through OIDC. GitHub holds no AWS keys.
   - Trust is scoped by GitHub environment, with exact `sub` matches. `ongiiot-github-deploy` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:environment:poc` and `…:environment:dev`, and can only assume the CDK bootstrap roles. `ongiiot-github-diff` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:pull_request`, and can only assume the read-only CDK lookup role.
-  - Every deploy runs the test suite first; the `deploy` job needs it to pass before AWS is touched.
+  - Deploys do not run the test suite (amended 2026-09-29, OG-23, owner decision; was "every deploy runs the test suite first"). The tests run in CI on every pull request to `main` and push to `main`; the `deploy` job needs only `resolve`, so a manual dispatch from a branch can deploy untested code.
   - Nothing deploys automatically. `poc` deploys only by manual dispatch from `main` in the GitHub environment `poc` (branch rule `main`); starting the run is the approval, because GitHub Team has no required reviewers for private repos. `poc-<initials>` stages deploy by manual dispatch from any branch in the environment `dev`. Each run deploys only `*-<stage>`, one run per stage at a time.
   - Pull requests run tests, `cdk synth` and a read-only `cdk diff --method template` against `poc` with the diff role, and never deploy.
   - `GitHubOidcStack` is outside every stage. It is deployed once, locally, with `-c oidc=true`.

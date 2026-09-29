@@ -12,8 +12,6 @@ import ast
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = ("sim", "detect", "ops")
 
@@ -44,27 +42,27 @@ def top(name: str) -> str:
     return name.split(".")[0]
 
 
-@pytest.mark.parametrize("path", modules("detect/core"), ids=lambda p: str(p.relative_to(ROOT)))
-def test_core_imports_only_stdlib_and_core(path):
-    for name in imports(path):
-        if top(name) == "detect":
-            assert name == "detect.core" or name.startswith("detect.core."), name
-        else:
-            assert top(name) in sys.stdlib_module_names or top(name) == "__future__", name
-
-
-@pytest.mark.parametrize("path", modules("detect/adapters"), ids=lambda p: str(p.relative_to(ROOT)))
-def test_adapters_do_not_import_facility_or_handler(path):
-    for name in imports(path):
-        assert top(name) != "facility", name
-        assert not name.startswith("detect.handler"), name
-
-
-@pytest.mark.parametrize("package", PACKAGES)
-def test_sim_detect_ops_never_import_each_other(package):
-    for path in modules(package):
+def test_core_imports_only_stdlib_and_core():
+    for path in modules("detect/core"):
         for name in imports(path):
-            assert top(name) not in set(PACKAGES) - {package}, (str(path.relative_to(ROOT)), name)
+            if top(name) == "detect":
+                assert name == "detect.core" or name.startswith("detect.core."), (str(path.relative_to(ROOT)), name)
+            else:
+                assert top(name) in sys.stdlib_module_names or top(name) == "__future__", (str(path.relative_to(ROOT)), name)
+
+
+def test_adapters_do_not_import_facility_or_handler():
+    for path in modules("detect/adapters"):
+        for name in imports(path):
+            assert top(name) != "facility", (str(path.relative_to(ROOT)), name)
+            assert not name.startswith("detect.handler"), (str(path.relative_to(ROOT)), name)
+
+
+def test_sim_detect_ops_never_import_each_other():
+    for package in PACKAGES:
+        for path in modules(package):
+            for name in imports(path):
+                assert top(name) not in set(PACKAGES) - {package}, (str(path.relative_to(ROOT)), name)
 
 
 def test_checker_sees_absolute_and_relative_imports():
