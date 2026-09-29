@@ -206,29 +206,64 @@ def test_after_grace_a_new_incident_opens():
     assert res.ops["opened"] == [{"pipe": "P-007", "incident_id": new}]
 
 
+def reset_id_of(k: int) -> str:
+    return iso(end_of(k) + timedelta(seconds=90))  # a reset invoked after run k's scheduled_time
+
+
+def rig_reset(rig, k: int):
+    return rig.inc.reset(run_id=reset_id_of(k), now=end_of(k) + timedelta(seconds=90), pipes=PIPES, config_hash="hash-1")
+
+
+def test_reset_closes_every_open_incident_and_is_idempotent():
+    rig = Rig()
+    rig.run(0, [*three(0), F("leak_methane_rise", 0.9, ["/lng1/train1/P-008/methane_ppm"], 0, pipe="P-008")])
+    ids = {p: rig.items(p)["OPEN"]["incident_id"] for p in PIPES}
+    res = rig_reset(rig, 0)
+    assert res.closed == [{"pipe": p, "incident_id": ids[p]} for p in sorted(PIPES)] and res.conflicts == []
+    for p in PIPES:
+        ((sk, it),) = rig.items(p).items()
+        assert sk == f"C#{ids[p]}" and it["status"] == "CLOSED" and it["closed_reason"] == "reset"
+        assert it["last_run"] == reset_id_of(0)
+    n = len(rig.db.writes)
+    again = rig_reset(rig, 1)  # nothing OPEN: nothing to do
+    assert again.closed == [] and len(rig.db.writes) == n
+
+
+def test_reset_conflict_twice_leaves_the_pipe_open():
+    rig = Rig()
+    rig.run(0, three(0))
+    rig.db.fail_writes = "ConditionalCheckFailedException"  # every close attempt loses its condition
+    res = rig_reset(rig, 0)
+    assert res.conflicts == ["P-007"] and res.closed == []
+    assert set(rig.items()) == {"OPEN"}
+    (line,) = rig.logs
+    assert json.loads(line)["level"] == "WARNING" and json.loads(line)["pipe_id"] == "P-007"
+
+
 def test_reset_closed_never_reopens():
     rig = Rig()
-    reset = Incident(
-        incident_id="01RESET",
-        pipe_id="P-007",
-        area="train1",
-        status=rules.CLOSED,
-        opened_at=end_of(0),
-        last_seen=end_of(0),
-        evidence_from=end_of(0),
-        evidence_to=end_of(0),
-        evidence_aliases=(A["methane_ppm"],),
-        detectors={"leak_methane_rise": DetectorState(1.0, "x.", "1", end_of(0), end_of(0), 0)},
-        confidence=1.0,
-        notified_at="2026-09-29T01:00:30.000Z",
-        closed_at=end_of(1),
-        closed_reason=rules.RESET,
-    )
-    rig.db.items[("P-007", "C#01RESET")] = serialize(to_item(reset, run_id_of(1), "hash-1"))
+    rig.run(0, three(0))
+    old = rig.items()["OPEN"]["incident_id"]
+    rig_reset(rig, 0)
     res = rig.run(2, [F("leak_methane_rise", 0.9, [A["methane_ppm"]], 2)])  # within grace of the reset
     items = rig.items()
-    assert items["OPEN"]["incident_id"] != "01RESET" and "C#01RESET" in items
+    assert items["OPEN"]["incident_id"] != old and f"C#{old}" in items
+    assert "notified_at" not in items["OPEN"]  # a new incident: it gets its own email
     assert res.ops["opened"] and not res.ops["reopened"]
+
+
+def test_reset_beats_an_earlier_in_flight_run():
+    rig = Rig()
+    rig.run(0, three(0))
+    old = rig.items()["OPEN"]["incident_id"]
+    # Run 1 (scheduled before the reset) reads the OPEN slot, then the reset closes it before run 1 writes.
+    rig.db.before_write = lambda db, op: rig_reset(rig, 1)
+    res = rig.run(1, three(1))
+    assert set(rig.items()) == {f"C#{old}"} and rig.items()[f"C#{old}"]["closed_reason"] == "reset"
+    assert "P-007" in res.replayed and not res.ops["updated"] and not res.ops["opened"]
+    # The next scheduled run (after the reset) proceeds.
+    res = rig.run(2, three(2))
+    assert res.ops["opened"] and rig.items()["OPEN"]["incident_id"] != old
 
 
 # -- Replay (AD-12) ---------------------------------------------------------------------------------
