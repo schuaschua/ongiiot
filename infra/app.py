@@ -9,7 +9,8 @@
 ``DetectionStack-<stage>`` runs the 1-minute detection Lambda; its schedule follows the same
 ``simulator`` switch (``off`` disables it). It also holds the ``operators-<stage>`` topic, whose
 email subscriptions come only from ``-c operator_emails=a@x,b@y`` (empty by default), and takes the
-Grafana URL from ``SharedGrafanaStack`` for the incident deep link.
+Grafana URL from ``SharedGrafanaStack`` for the incident deep link. The health alarms (detection errors,
+simulator down) notify the separate ``team-alarms-<stage>`` topic, subscribed from ``-c team_emails=...``.
 
 ``-c oidc=true`` also adds the one-time ``GitHubOidcStack`` (fixed name, no stage
 suffix). Workflows never pass it and deploy only ``*-<stage>``, so they do not target it;

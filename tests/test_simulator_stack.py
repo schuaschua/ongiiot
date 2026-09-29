@@ -154,6 +154,8 @@ def test_service_one_task_with_rollback(synthesized):
     assert dc["MaximumPercent"] == 100 and dc["MinimumHealthyPercent"] == 0
     (cluster,) = props(tpl, "AWS::ECS::Cluster")
     assert cluster["ClusterName"] == f"simulator-{stage}"
+    # AD-15: RunningTaskCount for the simulator-down alarm.
+    assert cluster["ClusterSettings"] == [{"Name": "containerInsights", "Value": "enabled"}]
 
 
 def test_simulator_off_only_changes_desired_count():

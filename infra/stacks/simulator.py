@@ -73,7 +73,14 @@ class SimulatorStack(cdk.Stack):
             description=f"Simulator task ({stage}): egress only, no ingress",
             allow_all_outbound=True,
         )
-        self.cluster = ecs.Cluster(self, "Cluster", cluster_name=f"simulator-{stage}", vpc=self.vpc)
+        # Container Insights emits RunningTaskCount (an explicit 0 with no task) for the simulator-down alarm (AD-15).
+        self.cluster = ecs.Cluster(
+            self,
+            "Cluster",
+            cluster_name=f"simulator-{stage}",
+            vpc=self.vpc,
+            container_insights_v2=ecs.ContainerInsights.ENABLED,
+        )
 
         image = ecr_assets.DockerImageAsset(
             self,

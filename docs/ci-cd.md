@@ -414,6 +414,38 @@ aws logs tail /aws/lambda/detection-$STAGE --region ap-southeast-1 --since 30m -
 
 The reader strategy is the env var `READER_STRATEGY` (`batch_get` or `execute_query`), set by `infra/stacks/detection.py` from `DEFAULT_STRATEGY` in `detect/adapters/reader.py` (`batch_get`, from the AD-18 spike). The function role can read SiteWise, write only to this stage's pipe assets (plus `time-series/*`, as for the simulator), and has no access to `sim_control` or `injection_log` (AD-4, AD-17). On DynamoDB it holds only `Query`, `PutItem`, `DeleteItem` and `TransactWriteItems` on `incidents-<stage>`, plus `UpdateItem` in a separate statement limited by `dynamodb:Attributes` to `pk`, `sk`, `incident_id` and `notified_at` (the outbox marker) (no `Scan`; the table name reaches the Lambda as `INCIDENTS_TABLE`). IAM cannot restrict writes to `derived/` aliases, and the `time-series/*` grant covers every time series in the account, so IAM does not isolate stages either. Both boundaries are the code guard: `detect/adapters/derived_writer.py` refuses any alias that is not one of this stage's `derived/` aliases before calling SiteWise.
 
+### Health alarms
+
+Two CloudWatch alarms per stage (AD-15, Story 4.4) tell the team when the platform itself is unhealthy. They live in `DetectionStack-<stage>` and send both their ALARM and OK notifications to the SNS topic `team-alarms-<stage>` (output `TeamAlarmsTopicArn`), never to the operator topic, so operators never receive platform noise.
+
+| Alarm | Metric | Fires when | Means |
+|-------|--------|------------|-------|
+| `detection-errors-<stage>` | `AWS/Lambda` `Errors`, `FunctionName=detection-<stage>`, Sum over 5 min | ≥ 1 error in one 5-minute period (no data counts as OK) | A detection run crashed or timed out. Check `aws logs tail /aws/lambda/detection-$STAGE --since 15m`. |
+| `simulator-down-<stage>` | `ECS/ContainerInsights` `RunningTaskCount` Minimum, cluster and service `simulator-<stage>`, 1 min | < 1 for 3 consecutive minutes (no data counts as down) | No simulator task is running, so no raw data is arriving. The ECS service normally replaces a stopped task by itself; if it does not, check the service events. |
+
+Container Insights is enabled on the `simulator-<stage>` cluster only (a few dollars a month per stage). It reports `RunningTaskCount` every minute, including an explicit 0 when no task runs. The plain `AWS/ECS` `CPUUtilization` metric was not used because it simply stops at 0 tasks, and CloudWatch evaluated that missing data about 11 minutes late in the live check. The 3-minute window rides over the roughly one-minute gap of a normal simulator redeploy (the old task stops before the new one starts), so a deploy does not page the team.
+
+**Simulator switch.** With `-c simulator=off` the simulator alarm's actions are disabled: it still goes to ALARM (no task is running) but sends nothing, so a deliberate stop does not page the team. The detection errors alarm stays enabled. The next deploy with `simulator=on` (or without the flag) re-enables the actions.
+
+**Recipients.** Only addresses in the CDK context `team_emails` (comma-separated, consultants only) are subscribed. It is parsed exactly like `operator_emails` (duplicates dropped case-insensitively, a malformed address fails synth), applies to every stage when set in `cdk.json`, and the topic has the same policy that denies `sns:Subscribe` to everyone but the CDK CloudFormation execution role. The topic policy also lets `cloudwatch.amazonaws.com` publish, limited to this account's alarms, because an explicit topic policy replaces SNS's default one. Each address gets its own confirmation email for this topic, separate from any operator subscription, and must click **Confirm subscription** before it receives alarms. Check with the same command as above, using `TeamAlarmsTopicArn`:
+
+```bash
+aws sns list-subscriptions-by-topic --region ap-southeast-1 \
+  --topic-arn "$(aws cloudformation describe-stacks --region ap-southeast-1 --stack-name DetectionStack-$STAGE \
+    --query "Stacks[0].Outputs[?OutputKey=='TeamAlarmsTopicArn'].OutputValue" --output text)" \
+  --query 'Subscriptions[].[Endpoint,SubscriptionArn]' --output text   # PendingConfirmation until clicked
+```
+
+To test the simulator alarm on a developer stage, stop the task by hand; the alarm should reach ALARM within about 4 minutes and return to OK once the service has started a new task:
+
+```bash
+TASK=$(aws ecs list-tasks --region ap-southeast-1 --cluster simulator-$STAGE --service-name simulator-$STAGE --query 'taskArns[0]' --output text)
+[ "$TASK" != None ] || { echo "no running task"; exit 1; }
+aws ecs stop-task --region ap-southeast-1 --cluster simulator-$STAGE --task "$TASK" --reason "health alarm test"
+aws cloudwatch describe-alarm-history --region ap-southeast-1 --alarm-name simulator-down-$STAGE \
+  --history-item-type StateUpdate --query 'AlarmHistoryItems[].[Timestamp,HistorySummary]' --output text
+```
+
 ## What this does and does not protect
 
 Protected:
