@@ -18,7 +18,8 @@ Detectors joining an already-notified incident, and a reopened incident (``notif
 
 Email v1: subject ``[POC] Pipe <pipe_id> incident <incident_id>``; body lines: the POC banner; pipe ID and
 area; incident confidence (2 dp); one line per detector (id, confidence 2 dp, explanation); the contributing
-aliases; the Deep link v1 (``deeplink.build_link``).
+aliases; the Deep link v1 (``deeplink.build_link``). Each ``notified`` entry carries the ``link`` that was
+emailed, so the run's summary line records it (read back by ``ops/smoke.py``).
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def body(inc: Incident, link: str) -> str:
 
 @dataclass
 class NotifyResult:
-    notified: list[dict[str, str]] = field(default_factory=list)  # {pipe, incident_id, message_id}
+    notified: list[dict[str, str]] = field(default_factory=list)  # {pipe, incident_id, message_id, link}
     failures: list[dict[str, str]] = field(default_factory=list)  # {pipe, incident_id, step, error}
 
 
@@ -122,7 +123,8 @@ class Notifier:
                 self._fail(result, ref, "deadline", f"less than {DEADLINE_MS} ms left; left to the next run", run_id)
                 continue
             try:
-                subj, msg = subject(inc), body(inc, self.link(inc))
+                link = self.link(inc)
+                subj, msg = subject(inc), body(inc, link)
             except ValueError as exc:  # a malformed incident: recorded, never published
                 self._fail(result, ref, "render", repr(exc), run_id)
                 continue
@@ -140,7 +142,7 @@ class Notifier:
             if not marked:
                 self._fail(result, {**ref, "message_id": message_id}, "mark", "notified_at already set or incident changed", run_id)
                 continue
-            result.notified.append({**ref, "message_id": message_id})
+            result.notified.append({**ref, "message_id": message_id, "link": link})
         return result
 
     def _fail(self, result: NotifyResult, ref: dict[str, str], step: str, error: str, run_id: str) -> None:
