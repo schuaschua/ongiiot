@@ -127,6 +127,25 @@ def test_no_data(facility):
     assert len(summary["aliases_no_data"]) == 144 and summary["values_written"] == 288 + 48
 
 
+@pytest.mark.parametrize("stopped", ["all", "one-pipe"])
+def test_source_stopping_mid_window(facility, stopped):
+    """OG-26: a source that stops 2 minutes before window_end (samples earlier in the window) is a source outage
+    when at least half of the aliases fall silent: no incidents open. One silent pipe still opens its incident."""
+    store = live_store(facility)
+    cut = END.timestamp() - 120
+    for alias, samples in store.items():
+        if stopped == "all" or "/P-007/" in alias:
+            store[alias] = [s for s in samples if s[0] < cut]
+    summary, logs = run(facility, FakeSiteWise(store, page=20000), db=FakeDynamoDB(TABLE))
+    opened = [o["pipe"] for o in summary["incident_ops"]["opened"]]
+    if stopped == "all":
+        assert summary["source_outage"] is True and opened == []
+        (outage,) = [d for d in (json.loads(x) for x in logs if x.startswith("{")) if d.get("msg") == "source outage"]
+        assert outage["aliases_silent"] == outage["aliases"] == 144
+    else:
+        assert summary["source_outage"] is False and opened == ["P-007"]
+
+
 def run_with(facility, fake, detectors, pass2=()):
     """A run with fake pass-1 ``detectors``; pass 2 is off unless ``pass2`` is given."""
     logs = []

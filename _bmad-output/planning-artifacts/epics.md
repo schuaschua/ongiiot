@@ -112,10 +112,12 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | 4.1 | OG-18 | Done (PR #12) |
 | 4.2 | OG-19 | Done (PR #17) |
 | 4.3 | OG-20 | Done (PR #18) |
-| 4.4–4.5 | OG-21 – OG-22 | To Do |
+| 4.4 | OG-21 | Done (PR #19) |
+| 4.5 | OG-22 | To Do |
 | Task: trim tests, drop deploy test gate | OG-23 | Done (PR #14) |
 | Task: incident alert state on facility overview | OG-24 | To Do |
 | Task: operator email + leak simulation | OG-25 | Done (PR #15) |
+| Bug: simulator stop mid-window emails every pipe | OG-26 | Done (PR #20) |
 
 ## Epic List
 
