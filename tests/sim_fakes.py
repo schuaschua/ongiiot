@@ -102,6 +102,26 @@ class FakeTable:
         self.writes += 1
         self.items[Item["pk"]] = copy.deepcopy(Item)
 
+    def delete_item(self, Key):
+        self.writes += 1
+        self.items.pop(Key["pk"], None)
+
+    def batch_writer(self):
+        """Buffers deletes and applies them on exit, like boto3's ``BatchWriter``."""
+        table, pending = self, []
+
+        class _Batch:
+            def delete_item(self, Key):
+                pending.append(Key)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                for key in pending:
+                    table.delete_item(key)
+
+        return _Batch()
 
     def update_item(self, Key, UpdateExpression, ConditionExpression, ExpressionAttributeValues):
         """Only ``SET <attr> = :e`` guarded by ``attribute_exists(pk) AND attribute_not_exists(<attr>)``."""

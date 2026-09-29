@@ -28,6 +28,12 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
    ``alert_state`` (pipe -> detectors in its OPEN incident, pipes with none left out), ``notified``
    (``[{pipe, incident_id, message_id}]``) and ``notify_failures`` (``[{pipe, incident_id, step, error}]``).
 
+Reset event ``{"action": "reset"}`` (AD-15, sent by ``ops/reset.py``): ``run_id`` is the invocation time
+(``iso(now)``), and every pipe's OPEN incident is closed with ``closed_reason=reset`` by ``incidents.py``. It runs
+no detectors, writes no SiteWise values and sends no email (the next scheduled run writes ``alert_state = 0`` and
+``alert_summary = {}``). It returns and logs one JSON line ``{"action":"reset","run_id","closed":[{pipe,
+incident_id}],"conflicts":[pipe]}`` (plus ``stage`` and ``config_hash``). Any other ``action`` is refused.
+
 Environment: ``STAGE``, ``INCIDENTS_TABLE``, ``OPERATOR_TOPIC_ARN``, ``GRAFANA_URL`` and ``DASHBOARD_UID`` (all required), ``READER_STRATEGY`` (``batch_get`` or ``execute_query``; default
 ``reader.DEFAULT_STRATEGY``),
 ``FACILITY_PATH`` (default: the bundled ``facility.yaml``). The facility model, pipe metadata and
@@ -487,6 +493,28 @@ def runtime(env: Mapping[str, str] = os.environ, client: Any = None, dynamodb: A
     return _RUNTIME
 
 
+def reset(rt: Runtime, now: datetime, log: Callable[[str], None] = print) -> dict[str, Any]:
+    """The demo reset (AD-15): close every OPEN incident with ``closed_reason=reset``; ``run_id = iso(now)``."""
+    run_id = iso(now)
+    config_hash = rt.facility.config_hash()
+    res = rt.incidents.reset(run_id=run_id, now=now, pipes=list(rt.pipes), config_hash=config_hash)
+    summary = {
+        "action": "reset",
+        "run_id": run_id,
+        "closed": res.closed,
+        "conflicts": res.conflicts,
+        "stage": rt.facility.stage,
+        "config_hash": config_hash,
+    }
+    log(json.dumps(summary, separators=(",", ":")))
+    return summary
+
+
 def handler(event: Mapping[str, Any], context: Any = None) -> dict[str, Any]:
+    action = event.get("action") if isinstance(event, Mapping) else None
+    if action is not None:
+        if action != "reset":
+            raise ValueError(f"unknown action {action!r}")
+        return reset(runtime(), datetime.now(UTC))
     remaining = getattr(context, "get_remaining_time_in_millis", None)
     return run(runtime(), parse_scheduled_time(event), remaining_ms=remaining)

@@ -9,6 +9,8 @@ history), let ``detect/core/incident_rules.decide`` pick the change, then write 
   (``status=CLOSED``, ``closed_reason=quiet``, ``attribute_not_exists(pk)``);
 - reopen: one ``TransactWriteItems``: delete ``C#<incident_id>`` (``closed_reason = quiet AND last_run < :run_id``)
   and put ``OPEN`` (``attribute_not_exists(pk)``) with the same ``incident_id`` and ``notified_at``.
+- reset (AD-15, the ``{"action": "reset"}`` event): for every pipe with an OPEN slot, the same transaction as a
+  close, with ``closed_reason=reset``; pipes without a slot are skipped, so a reset is idempotent.
 - notified (AD-7 outbox, called by ``notifier.py`` after a publish): ``UpdateItem`` of ``sk=OPEN``,
   ``SET notified_at`` conditional on ``incident_id = :iid AND attribute_not_exists(notified_at)``. It does not
   touch ``last_run``, so it never blocks the next run's update.
@@ -181,6 +183,13 @@ class ApplyResult:
     conflicts: list[str] = field(default_factory=list)  # pipes left to the next run after a second conflict
 
 
+@dataclass
+class ResetResult:
+    closed: list[dict[str, str]] = field(default_factory=list)  # [{pipe, incident_id}] closed by the reset
+    replayed: set[str] = field(default_factory=set)  # pipes whose items already carry a run at or after the reset's
+    conflicts: list[str] = field(default_factory=list)  # pipes left open after a second conflict
+
+
 class Incidents:
     def __init__(
         self,
@@ -236,6 +245,45 @@ class Incidents:
                 return False
             raise
         return True
+
+    # -- the demo reset (AD-15) ---------------------------------------------------------------------
+
+    def reset(self, *, run_id: str, now: datetime, pipes: Collection[str], config_hash: str) -> ResetResult:
+        """Close every pipe's OPEN incident with ``closed_reason=reset`` (one close transaction per pipe, guarded by
+        ``last_run < :run_id``). Pipes with no OPEN slot, or whose items already carry a ``last_run`` at or after
+        ``run_id`` (AD-12), are skipped. A conflict re-reads the pipe and tries once more, as in a run."""
+        result = ResetResult()
+        for pipe_id in sorted(pipes):
+            for attempt in (1, 2):
+                state = self.read(pipe_id)
+                if state.open is None:
+                    break
+                if state.max_last_run is not None and state.max_last_run >= run_id:
+                    result.replayed.add(pipe_id)
+                    break
+                decision = rules.reset_close(state.open, now)
+                try:
+                    self._write(decision, run_id, config_hash)
+                except Exception as exc:
+                    if not is_conflict(exc):
+                        raise
+                    if attempt == 1:
+                        continue
+                    self._log(
+                        json.dumps(
+                            {
+                                "run_id": run_id,
+                                "pipe_id": pipe_id,
+                                "level": "WARNING",
+                                "error": f"incident reset conflict ({_error_code(exc)}); left open",
+                            }
+                        )
+                    )
+                    result.conflicts.append(pipe_id)
+                    break
+                result.closed.append({"pipe": pipe_id, "incident_id": state.open.incident_id})
+                break
+        return result
 
     # -- the run ----------------------------------------------------------------------------------
 

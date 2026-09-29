@@ -158,6 +158,25 @@ def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
     assert link.startswith(f"{NOTIFY_ENV['GRAFANA_URL']}/d/{NOTIFY_ENV['DASHBOARD_UID']}/")
 
 
+def test_reset_event_closes_incidents_without_a_detection_run(facility, monkeypatch):
+    """Story 4.2: ``{"action": "reset"}`` closes the OPEN incidents (no reads, no SiteWise writes, no email);
+    any other action is refused."""
+    fake, db, sns = FakeSiteWise(leak_store(facility), page=20000), FakeDynamoDB(TABLE), FakeSNS()
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    handler.runtime(ENV, client=fake, dynamodb=db, sns=sns)
+    handler.handler({"scheduled_time": SCHEDULED})
+    iid = db.plain()[("P-007", "OPEN")]["incident_id"]
+    stored, published = dict(fake.stored), list(sns.published)
+    summary = handler.handler({"action": "reset"})
+    with pytest.raises(ValueError):
+        handler.handler({"action": "wipe"})
+    monkeypatch.setattr(handler, "_RUNTIME", None)
+    assert summary["action"] == "reset" and summary["closed"] == [{"pipe": "P-007", "incident_id": iid}] and summary["conflicts"] == []
+    ((key, item),) = db.plain().items()
+    assert key == ("P-007", f"C#{iid}") and item["closed_reason"] == "reset" and item["last_run"] == summary["run_id"]
+    assert fake.stored == stored and sns.published == published
+
+
 # -- Story 2.2: dq_flatline and dq_stuck registered in pass 1 ------------------------------------
 
 

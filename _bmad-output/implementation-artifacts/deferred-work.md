@@ -58,3 +58,6 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-3-3-incidents.md`
   summary: Add a TTL or archive for closed incident history (C# items) and avoid reading a pipe's full history every run.
   evidence: Each run queries every pipe's full partition; cost grows with history (fine at POC scale).
+- source_plan: `_bmad-output/implementation-artifacts/plan-4-2-demo-reset.md`
+  summary: Test the `ops/reset.py` path where the invoke succeeds but the `sim_control` scan or delete fails (exit 1, "incidents are already closed; run the reset again").
+  evidence: Verification-gap review of Story 4.2. No test makes the table fail after a successful invoke, and `FakeTable.fail_scans` raises a plain Exception rather than a botocore `ClientError`, so the test needs a fake change first.

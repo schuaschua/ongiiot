@@ -101,6 +101,18 @@ SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject li
 SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject list --json --recent-min 240
 ```
 
+**Reset between rehearsals.** `ops.reset` clears a rehearsal (AD-15, Story 4.2). It first invokes `detection-<stage>` synchronously with `{"action": "reset"}`: the Lambda closes every pipe's OPEN incident in `incidents-<stage>` with `closed_reason=reset` (the same close transaction as a quiet close; no detectors run, no SiteWise values are written and no email is sent). Only if that succeeds does it delete every item in `sim-control-<stage>`; the simulator drops them within 5 s, which stops their effect. Raw SiteWise data and `injection-log-<stage>` are untouched. It asks for confirmation unless `--yes` is given, and prints what it closed and deleted:
+
+```bash
+SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.reset          # asks first
+uv run python -m ops.reset --stage poc-dj --table sim-control-poc-dj --yes             # no prompt
+```
+
+- The next scheduled run writes `alert_state = 0` and `alert_summary = {}`. A reset-closed incident never reopens: a later finding on that pipe opens a new incident with its own email.
+- **Stray incidents.** A run within about 2 minutes of the reset can still see the fault in its trailing window and open a new incident. Wait about 2 minutes and run the reset again if one appears (`ops.reset` prints this hint).
+- **Failures.** If the invoke fails (for example the function is throttled because a scheduled run holds its one slot, or it returns a Lambda error), the script exits 1 and deletes nothing: run it again. A pipe whose close lost a race twice is listed as a warning and stays open; run it again. Running it twice is safe: pipes with nothing OPEN are skipped.
+- The caller needs `lambda:InvokeFunction` on `detection-<stage>` and `dynamodb:Scan` and `dynamodb:BatchWriteItem` on `sim-control-<stage>` (the Ops role in AD-17).
+
 When a cancel ends an injection that has already applied, the simulator sets `effective_end` once on that injection's `injection-log-<stage>` row; the planned `end_at` stays. An injection cancelled before it applied has no row. This needs the task role's `dynamodb:UpdateItem` grant on that table (Story 4.1): redeploy `SimulatorStack-<stage>` before `effective_end` writes succeed (until then they fail, are logged and retried; the stream is unaffected).
 
 - **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
@@ -344,7 +356,7 @@ With the leak injection above, P-007 gets one OPEN incident with `leak_mass_bala
 
 Known limits:
 
-- There is no reset yet (Story 4.2); to clear incidents on a developer stage, wait for them to close or delete the items by hand.
+- To clear incidents and injections between rehearsals, use `ops.reset` (section 5).
 - If a detector is suppressed on a pipe for a long time (for example a sensor stays untrusted), its entry in that pipe's incident never counts quiet runs, so the incident stays open until the detector can check the pipe again.
 - Each run queries every pipe's items (one `Query` per pipe, with its closed history), which is fine for the POC's 24 pipes and short history.
 
