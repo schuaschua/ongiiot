@@ -92,13 +92,13 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 
 | Item | Key | Status at push |
 |------|-----|----------------|
-| Epic 1 | OG-1 | In Progress |
+| Epic 1 | OG-1 | Done |
 | Epic 2 | OG-2 | Done |
 | Epic 3 | OG-3 | Done |
-| Epic 4 | OG-4 | In Progress |
+| Epic 4 | OG-4 | Done (fallback recording and team_emails still manual) |
 | 1.1 | OG-5 | Done |
 | 1.2 | OG-6 | Done |
-| 1.3 | OG-7 | Done (merged in PR #1, `ee4936f`; poc not yet deployed) |
+| 1.3 | OG-7 | Done (merged in PR #1, `ee4936f`; poc deployed 2026-09-29) |
 | 1.4 | OG-8 | Done (PR #2) |
 | 1.5 | OG-9 | Done (PR #3) |
 | 2.1 | OG-10 | Done (PR #4) |
