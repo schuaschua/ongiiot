@@ -15,8 +15,8 @@ One run per EventBridge Scheduler invocation, event ``{"scheduled_time": "<ISO-8
 5b. Incidents (AD-6, AD-12, ``detect/adapters/incidents.py``): every finding of both passes (``dq_*`` included,
    with the gap rule's) joins its pipe's one OPEN incident. A detector counts as quiet on a pipe only if it ran
    OK and covered the pipe (not suppressed as a whole for it). Source-outage guard: when at least half of the raw
-   aliases have no samples, ``dq_gap`` findings do not feed incidents and no detector counts as quiet
-   (``source_outage: true``). Then ``alert_state`` (INTEGER) and ``alert_summary`` (JSON STRING) at ``window_end``
+   aliases are silent (a ``dq_gap`` finding: no GOOD sample, or a trailing silence of ``min_gap_s`` or more),
+   ``dq_gap`` findings do not feed incidents and no detector counts as quiet (``source_outage: true``). Then ``alert_state`` (INTEGER) and ``alert_summary`` (JSON STRING) at ``window_end``
    for every pipe except those the replay guard left untouched (AD-13).
 5c. Notify (AD-7, ``detect/adapters/notifier.py``): for every OPEN incident without ``notified_at``, publish one
    Email v1 message to ``OPERATOR_TOPIC_ARN``, then set ``notified_at`` (the outbox). A failed publish is logged
@@ -245,13 +245,15 @@ def run(
     # Incidents (AD-6, AD-12): every finding of any family joins its pipe's incident, then alert state (AD-13).
     # Source-outage guard: when at least half of the raw aliases are silent (simulator start/stop, ingest outage),
     # dq_gap findings do not feed incidents and no detector counts as quiet (the dq values above are still written).
+    # Silent = named by a dq_gap finding: no data at all (the gap rule) or a trailing silence of at least min_gap_s,
+    # so a source that stops partway through the window counts too (OG-26).
     expected = [a for p in fw.pipes.values() for a in p.aliases.values()]
-    no_data = [a for a in expected if not fw.window.series.get(a)]
-    outage = bool(expected) and len(no_data) >= SOURCE_OUTAGE_FRAC * len(expected)
     incident_findings = [*dq_score.with_gap_rule(fw, findings), *leaks]
+    silent = {a for x in incident_findings if x.detector_id == dq_score.GAP_ID for a in x.evidence_aliases} & set(expected)
+    outage = bool(expected) and len(silent) >= SOURCE_OUTAGE_FRAC * len(expected)
     quiet_ok = covered(fw.pipes, ran_ok, suppressed)
     if outage:
-        log(json.dumps({"stage": f.stage, "run_id": run_id, "msg": "source outage", "aliases_no_data": len(no_data), "aliases": len(expected)}))
+        log(json.dumps({"stage": f.stage, "run_id": run_id, "msg": "source outage", "aliases_silent": len(silent), "aliases": len(expected)}))
         incident_findings = [x for x in incident_findings if x.detector_id != dq_score.GAP_ID]
         quiet_ok = {pid: set() for pid in fw.pipes}
     t2 = clock()
