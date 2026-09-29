@@ -101,6 +101,39 @@ SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject li
 SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.inject list --json --recent-min 240
 ```
 
+**Reset between rehearsals.** `ops.reset` clears a rehearsal (AD-15, Story 4.2). It first invokes `detection-<stage>` synchronously with `{"action": "reset"}`: the Lambda closes every pipe's OPEN incident in `incidents-<stage>` with `closed_reason=reset` (the same close transaction as a quiet close; no detectors run, no SiteWise values are written and no email is sent). Only if that succeeds does it delete every item in `sim-control-<stage>`; the simulator drops them within 5 s, which stops their effect. Raw SiteWise data and `injection-log-<stage>` are untouched. It asks for confirmation unless `--yes` is given, and prints what it closed and deleted:
+
+```bash
+SIM_CONTROL_TABLE=sim-control-poc-dj STAGE=poc-dj uv run python -m ops.reset          # asks first
+uv run python -m ops.reset --stage poc-dj --table sim-control-poc-dj --yes             # no prompt
+```
+
+- The next scheduled run writes `alert_state = 0` and `alert_summary = {}`. A reset-closed incident never reopens: a later finding on that pipe opens a new incident with its own email.
+- **Stray incidents.** A run within about 5 minutes of the reset can still see the fault in its trailing window and open a new incident (and email it). On `poc-dj` a leak's methane stayed above its peers for about 4 minutes after the reset. Wait about 5 minutes and run the reset again if an incident appears (`ops.reset` prints this hint).
+- **Failures.** If the invoke fails (for example the function is throttled because a scheduled run holds its one slot, or it returns a Lambda error), the script exits 1 and deletes nothing: run it again. A pipe whose close lost a race twice is listed as a warning and stays open; run it again. Running it twice is safe: pipes with nothing OPEN are skipped.
+- The caller needs `lambda:InvokeFunction` on `detection-<stage>` and `dynamodb:Scan` and `dynamodb:BatchWriteItem` on `sim-control-<stage>` (the Ops role in AD-17).
+
+**Smoke test before the demo.** `ops.smoke` proves the whole chain in one step (AD-15, Story 4.3): injection, incident, email, evidence link. Run it after the warm-up and before the final reset:
+
+```bash
+SIM_CONTROL_TABLE=sim-control-poc-dj uv run python -m ops.smoke --stage poc-dj
+uv run python -m ops.smoke --stage poc --table sim-control-poc          # the demo stage
+uv run python -m ops.reset --stage poc-dj --table sim-control-poc-dj --yes   # after a PASS
+```
+
+1. **precheck:** the test pipe (`--pipe`, default `P-007`, the calibrated leak pipe) has no OPEN incident in `incidents-<stage>`; if it has one, the smoke stops with "run ops.reset first" and injects nothing. It also refuses a `sim_control` table other than `sim-control-<stage>`, and reads the stack outputs `SharedGrafanaStack` (`WorkspaceId`, `GrafanaUrl`) and `GrafanaStack-<stage>` (`PipeDetailUid`).
+2. **inject:** a default leak on the pipe, written to `sim-control-<stage>` as `ops.inject` writes it, lasting the budget plus 2 minutes.
+3. **incident:** polls the pipe's OPEN slot every 10 s until it holds an incident opened at or after the injection start (an older incident is not accepted).
+4. **email:** waits until that incident has `notified_at`.
+5. **link:** reads the link that was actually emailed from the run's summary line (`notified[].link`) in `/aws/lambda/detection-<stage>` (`FilterLogEvents`, matched on the `incident_id`).
+6. **resolve:** mints a short-lived token on the stage's Grafana service account (`ongiiot-provision-<stage>`), calls `GET /api/dashboards/uid/<uid>` for the uid in the link, and passes only if it returns 200, the uid is the stage's `pipe-detail` uid and the dashboard has the variables `pipe_id`, `area` and `evidence`. The token is deleted again.
+
+- **Budget.** One budget of 5 minutes (`--budget-s`, default 300) counts from the injection (AD-15's latency target); every wait checks the time left. Each step prints its elapsed time. In today's runs a leak on P-007 was opened and emailed about 2 to 3 minutes after injection.
+- **Result.** The last line is `PASS ...` (exit 0) or `FAIL: <step>: <reason>` (exit 1), for example `FAIL: incident: none after 300 s`. The injection is always cancelled at the end (pass, fail or Ctrl-C) with a cancel item; if the cancel itself fails, the smoke fails and prints the `ops.inject cancel` command to run.
+- **The incident stays OPEN** and its email is sent to the operator list. Run `ops.reset` after a pass, then wait about 5 minutes and check for stray incidents (see the reset notes above) before the demo.
+- The caller needs `dynamodb:GetItem` on `incidents-<stage>`, `dynamodb:PutItem` on `sim-control-<stage>`, `logs:FilterLogEvents` on `/aws/lambda/detection-<stage>`, `cloudformation:DescribeStacks` on `SharedGrafanaStack` and `GrafanaStack-<stage>`, and the Grafana service-account token actions on the workspace: `grafana:ListWorkspaceServiceAccounts`, `grafana:CreateWorkspaceServiceAccountToken` and `grafana:DeleteWorkspaceServiceAccountToken` (plus `grafana:CreateWorkspaceServiceAccount` if the stage's service account is missing).
+- The link is in the summary line only for runs of a detection Lambda deployed from Story 4.3 on; on an older deploy the smoke fails at `link`.
+
 When a cancel ends an injection that has already applied, the simulator sets `effective_end` once on that injection's `injection-log-<stage>` row; the planned `end_at` stays. An injection cancelled before it applied has no row. This needs the task role's `dynamodb:UpdateItem` grant on that table (Story 4.1): redeploy `SimulatorStack-<stage>` before `effective_end` writes succeed (until then they fail, are logged and retried; the stream is unaffected).
 
 - **AccessDenied:** the task role grants `iotsitewise:DescribeTimeSeries` and `iotsitewise:BatchPutAssetPropertyValue` on the stage's pipe asset ARNs. If the task stops with `AccessDenied` on either action, the fallback is to add the stage's `arn:aws:iotsitewise:ap-southeast-1:<account>:time-series/*` resource to that grant in `infra/stacks/simulator.py` (AD-17).
@@ -344,7 +377,7 @@ With the leak injection above, P-007 gets one OPEN incident with `leak_mass_bala
 
 Known limits:
 
-- There is no reset yet (Story 4.2); to clear incidents on a developer stage, wait for them to close or delete the items by hand.
+- To clear incidents and injections between rehearsals, use `ops.reset` (section 5).
 - If a detector is suppressed on a pipe for a long time (for example a sensor stays untrusted), its entry in that pipe's incident never counts quiet runs, so the incident stays open until the detector can check the pipe again.
 - Each run queries every pipe's items (one `Query` per pipe, with its closed history), which is fine for the POC's 24 pipes and short history.
 
@@ -354,7 +387,7 @@ Each incident sends one email (AD-7, Story 3.4). Delivery is **at least once**: 
 
 - **No duplicates.** A later run, a detector joining the incident, or a reopen within the grace period (the reopened incident keeps its `notified_at`) sends nothing.
 - **Failures.** A failed publish is logged (`"msg":"notify failed"`, `"step":"publish"`), listed in the summary's `notify_failures`, and retried by the next run; it never fails the run. A message that cannot be built (a malformed incident) is listed with `"step":"render"` and is not published. When the Lambda has less than 10 s left, the remaining pipes are listed with `"step":"deadline"` and left to the next run. Pipes the replay guard or a lost write race left untouched are not notified in that run. If the publish succeeded but the `notified_at` write lost its condition because `notified_at` is already set, it is listed with `"step":"mark"` and the next run sends nothing. If it lost because the slot now holds a different incident, or the write failed for another reason (throttling, a timeout), it is listed the same way and the next run can send the email again (at least once).
-- **Summary.** The run's summary line adds `notified` (`[{"pipe","incident_id","message_id"}]`, `message_id` from SNS) and `notify_failures` (`[{"pipe","incident_id","step","error"}]`), and `notify_duration_s`.
+- **Summary.** The run's summary line adds `notified` (`[{"pipe","incident_id","message_id","link"}]`, `message_id` from SNS, `link` the Deep link v1 that was emailed) and `notify_failures` (`[{"pipe","incident_id","step","error"}]`), and `notify_duration_s`.
 
 The email (Email v1): subject `[POC] Pipe <pipe_id> incident <incident_id>`. The body's first line is always the banner `POC - simulated data - evidence only, not an operational alert or official record`, then the pipe and area, the incident confidence (2 decimals), one line per detector (id, confidence, explanation), the contributing sensors (aliases), and the evidence link.
 

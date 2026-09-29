@@ -11,6 +11,9 @@ does to that pipe's incident:
 - ``close``: every detector of the OPEN incident has ``quiet_runs >= quiet_runs_to_close``.
 - ``None``: no OPEN incident and no findings: nothing to do.
 
+``reset_close`` is the demo reset's close (AD-15): the OPEN incident becomes CLOSED with ``closed_reason=reset``,
+whatever its quiet counters say. A reset close never reopens (``_reopens`` requires ``quiet``).
+
 Upsert of a detector: latest confidence (the highest of its findings on the pipe this run), the explanation
 of that finding, its version, ``first_seen`` kept, ``last_seen`` = the run's ``window_end``, ``quiet_runs = 0``.
 Evidence aliases are a sorted union; ``evidence_to`` only widens; ``evidence_from`` is fixed at open.
@@ -169,6 +172,11 @@ def decide(
     if op == "update" and all(s.quiet_runs >= tunables["quiet_runs_to_close"] for s in detectors.values()):
         return Decision("close", replace(incident, status=CLOSED, closed_at=now, closed_reason=QUIET))
     return Decision(op, incident)
+
+
+def reset_close(incident: Incident, now: datetime) -> Decision:
+    """Close ``incident`` for a demo reset (AD-15): ``status=CLOSED``, ``closed_at=now``, ``closed_reason=reset``."""
+    return Decision("close", replace(incident, status=CLOSED, closed_at=now, closed_reason=RESET))
 
 
 def _reopens(closed: Incident, now: datetime, tunables: Tunables) -> bool:
