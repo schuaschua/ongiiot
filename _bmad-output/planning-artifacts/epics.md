@@ -119,7 +119,7 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | Task: operator email + leak simulation | OG-25 | Done (PR #15) |
 | Bug: simulator stop mid-window emails every pipe | OG-26 | Done (PR #20) |
 | Task: close documentation gaps after the POC build | OG-27 | Done (PR #24) |
-| Task: alert the team when detection stops running | OG-28 | To Do |
+| Task: alert the team when detection stops running | OG-28 | Done (PR #25) |
 
 ## Epic List
 

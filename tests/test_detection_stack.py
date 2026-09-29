@@ -173,10 +173,11 @@ def test_switch_off_disables_only_the_schedule():
     s_on["State"] = "DISABLED"
     on["Outputs"]["ScheduleState"]["Value"] = "DISABLED"
     # AD-15: a deliberate stop does not page the team; the errors alarm stays enabled.
-    assert alarms(off)["simulator-down-poc-dj"]["ActionsEnabled"] is False
-    assert alarms(on)["simulator-down-poc-dj"]["ActionsEnabled"] is True
+    for name in ("simulator-down-poc-dj", "detection-stalled-poc-dj"):
+        assert alarms(off)[name]["ActionsEnabled"] is False
+        assert alarms(on)[name]["ActionsEnabled"] is True
+        alarms(on)[name]["ActionsEnabled"] = False
     assert "ActionsEnabled" not in alarms(off)["detection-errors-poc-dj"]
-    alarms(on)["simulator-down-poc-dj"]["ActionsEnabled"] = False
     assert on == off
 
 
@@ -249,6 +250,21 @@ def test_health_alarms_page_the_team_topic_only(synthesized):
             "ComparisonOperator": "LessThanThreshold",
             "EvaluationPeriods": 3,
             "DatapointsToAlarm": 3,
+            "TreatMissingData": "breaching",
+        },
+        f"detection-stalled-{stage}": {
+            **common,
+            "AlarmName": f"detection-stalled-{stage}",
+            "AlarmDescription": f"Detection Lambda detection-{stage} was not invoked in 5 minutes (schedule stopped)",
+            "ActionsEnabled": True,
+            "Namespace": "AWS/Lambda",
+            "MetricName": "Invocations",
+            "Dimensions": [{"Name": "FunctionName", "Value": f"detection-{stage}"}],
+            "Statistic": "Sum",
+            "Period": 300,
+            "ComparisonOperator": "LessThanThreshold",
+            "EvaluationPeriods": 1,
+            "DatapointsToAlarm": 1,
             "TreatMissingData": "breaching",
         },
     }
