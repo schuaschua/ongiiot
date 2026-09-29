@@ -4,5 +4,7 @@
     "include": ["infra/**", "facility/**"],
     "exclude": ["**/__pycache__", "cdk.out"]
   },
-  "context": {}
+  "context": {
+    "operator_emails": "operator@example.com"
+  }
 }
