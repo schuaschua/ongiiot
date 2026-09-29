@@ -27,8 +27,10 @@
   ``team_emails`` (parsed like ``operator_emails``), the same deny-Subscribe policy. Two alarms send ALARM and
   OK to it, never to the operator topic: ``detection-errors-<stage>`` (Lambda ``Errors`` Sum >= 1 over 5 min,
   missing data not breaching) and ``simulator-down-<stage>`` (Container Insights ``RunningTaskCount`` Minimum < 1 for
-  3 x 60 s on the deterministic ``simulator-<stage>`` cluster and service, missing data breaching). With
-  ``-c simulator=off`` the simulator alarm's actions are disabled.
+  3 x 60 s on the deterministic ``simulator-<stage>`` cluster and service, missing data breaching). A third,
+  ``detection-stalled-<stage>`` (OG-28), fires when the Lambda was not invoked at all in 5 minutes (``Invocations``
+  Sum < 1, missing data breaching): the schedule stopped. With ``-c simulator=off`` the simulator and stalled
+  alarms' actions are disabled (the schedule is DISABLED then).
 """
 
 from __future__ import annotations
@@ -334,7 +336,29 @@ class DetectionStack(cdk.Stack):
             # A deliberate stop (-c simulator=off) must not page the team.
             actions_enabled=state == "ENABLED",
         )
-        for alarm in (self.errors_alarm, self.simulator_alarm):
+        # OG-28: the schedule stopped (no invocation in 5 minutes). Lambda emits no Invocations datapoint then, so
+        # missing data breaches; the errors alarm cannot see this case.
+        self.stalled_alarm = cloudwatch.Alarm(
+            self,
+            "DetectionStalledAlarm",
+            alarm_name=f"detection-stalled-{stage}",
+            alarm_description=f"Detection Lambda {name} was not invoked in 5 minutes (schedule stopped)",
+            metric=cloudwatch.Metric(
+                namespace="AWS/Lambda",
+                metric_name="Invocations",
+                dimensions_map={"FunctionName": name},
+                statistic="Sum",
+                period=cdk.Duration.seconds(300),
+            ),
+            threshold=1,
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            evaluation_periods=1,
+            datapoints_to_alarm=1,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            # A deliberate stop (-c simulator=off) disables the schedule and must not page the team.
+            actions_enabled=state == "ENABLED",
+        )
+        for alarm in (self.errors_alarm, self.simulator_alarm, self.stalled_alarm):
             alarm.add_alarm_action(team_action)
             alarm.add_ok_action(team_action)
 

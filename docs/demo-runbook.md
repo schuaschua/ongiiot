@@ -21,7 +21,7 @@ Tick every line on the day. The demo is ready only when all are ticked.
 | T−30 min | Smoke test passed | `uv run python -m ops.smoke --stage poc --table sim-control-poc` | last line `PASS …` within 5 minutes; one email arrives |
 | T−25 min | Reset run | `uv run python -m ops.reset --stage poc --table sim-control-poc --yes` | `closed 1 incidents, deleted N injections` |
 | T−20 min | No stray incident after the reset | wait 5 minutes, then [Open incidents](#open-incidents) | no OPEN incident; if one appeared, run the reset again and wait another 5 minutes |
-| T−10 min | Health alarms OK | `aws cloudwatch describe-alarms --alarm-names detection-errors-poc simulator-down-poc --query 'MetricAlarms[].[AlarmName,StateValue]' --output text` | both `OK`. The alarms reach nobody until `team_emails` is set in `cdk.json` (it is not yet), so this check is the only way to see them |
+| T−10 min | Health alarms OK | `aws cloudwatch describe-alarms --alarm-names detection-errors-poc simulator-down-poc detection-stalled-poc --query 'MetricAlarms[].[AlarmName,StateValue]' --output text` | all three `OK`. The alarms reach nobody until `team_emails` is set in `cdk.json` (it is not yet), so this check is the only way to see them |
 | T−8 min | Rehearsal emails cleared | in the operator inbox, archive or delete every `[POC] Pipe … incident …` email (the smoke test and any stray incident each sent one) | no `[POC]` incident email left, so step 4 of the script opens the demo's email |
 | T−5 min | Screens ready | Grafana `facility-overview` open and signed in; mail client open on the operator inbox; this runbook and the fallback recording open | all visible |
 
