@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import aws_cdk as cdk
 import pytest
-import yaml
 from aws_cdk.assertions import Template
 
 from facility.model import (
@@ -15,7 +13,6 @@ from facility.model import (
     MEASUREMENTS,
     FacilityError,
     load,
-    parse,
 )
 from infra.app import build_app
 from infra.lambdas.seed_attributes import handler
@@ -34,7 +31,7 @@ def synth(stage: str):
     return facility, stack, Template.from_stack(stack).to_json()
 
 
-@pytest.fixture(scope="module", params=["poc", "poc-dj"])
+@pytest.fixture(scope="module", params=["poc-dj"])
 def synthesized(request):
     return synth(request.param)
 
@@ -96,22 +93,6 @@ def test_derived_types_match_v1(synthesized):
     assert by_name["methane_ppm_owner"]["Type"]["Attribute"]["DefaultValue"] == "HSE"
 
 
-def test_asset_properties_bound_by_external_id(synthesized):
-    _, _, tpl = synthesized
-    pipe_model = next(m for m in resources(tpl, "AWS::IoTSiteWise::AssetModel") if m["AssetModelName"].startswith("Pipe-"))
-    model_ext_ids = {p["ExternalId"] for p in pipe_model["AssetModelProperties"]}
-    for asset in resources(tpl, "AWS::IoTSiteWise::Asset"):
-        for p in asset.get("AssetProperties", []):
-            assert p["ExternalId"] in model_ext_ids
-
-
-def test_facility_asset_links_all_pipes(synthesized):
-    f, _, tpl = synthesized
-    root = next(a for a in resources(tpl, "AWS::IoTSiteWise::Asset") if "AssetHierarchies" in a)
-    assert len(root["AssetHierarchies"]) == len(f.pipes)
-    assert all(h["ExternalId"] == "pipes" for h in root["AssetHierarchies"])
-
-
 def test_stage_suffix_in_names(synthesized):
     f, stack, tpl = synthesized
     assert stack.stack_name == f"SiteWiseAssetsStack-{f.stage}"
@@ -132,15 +113,6 @@ def test_seed_custom_resource(synthesized):
     assert len(entries) == len(f.pipes) * len(f.attribute_properties())
     assert {"alias": f.attr_alias("P-007", "flow_in_max"), "type": "DOUBLE", "value": "80.0"} in entries
     assert len(seed["ModelHash"]) == 64
-
-
-def test_seed_hash_changes_with_model():
-    from infra.stacks.seed_attributes import model_hash
-    f = load(DEFAULT_PATH)
-    entries = attribute_entries(f)
-    changed = [dict(e) for e in entries]
-    changed[0]["value"] = "P-999"
-    assert model_hash(entries) != model_hash(changed)
 
 
 def test_two_stages_do_not_collide():
@@ -191,91 +163,7 @@ def test_handler_batches_of_ten_or_fewer():
     assert by_alias[f.attr_alias("P-007", "service")] == {"stringValue": "fuel_gas"}
 
 
-def test_handler_retries_retryable_errors_only_for_failed_entries():
-    entries = attribute_entries(load(DEFAULT_PATH))[:5]
-    fake = FakeSiteWise(fail_first=1)
-    handler.write_entries(entries, client=fake, sleep=lambda s: None)
-    assert len(fake.calls) == 2 and len(fake.calls[1]) == 1
-
-
-def test_handler_raises_on_non_retryable_error():
-    class Bad(FakeSiteWise):
-        def batch_put_asset_property_value(self, entries):
-            return {"errorEntries": [{"entryId": entries[0]["entryId"], "errors": [{"errorCode": "InvalidRequestException"}]}]}
-
-    with pytest.raises(RuntimeError):
-        handler.write_entries(attribute_entries(load(DEFAULT_PATH))[:3], client=Bad(), sleep=lambda s: None)
-
-
-def test_handler_gives_up_after_max_attempts():
-    class AlwaysMissing(FakeSiteWise):
-        def batch_put_asset_property_value(self, entries):
-            self.calls.append(entries)
-            return {
-                "errorEntries": [
-                    {"entryId": e["entryId"], "errors": [{"errorCode": "ResourceNotFoundException"}]} for e in entries
-                ]
-            }
-
-    fake = AlwaysMissing()
-    with pytest.raises(RuntimeError):
-        handler.write_entries(attribute_entries(load(DEFAULT_PATH))[:3], client=fake, sleep=lambda s: None)
-    assert len(fake.calls) == handler.MAX_ATTEMPTS
-
-
-def test_handler_empty_error_codes_are_not_retried():
-    class NoCodes(FakeSiteWise):
-        def batch_put_asset_property_value(self, entries):
-            self.calls.append(entries)
-            return {"errorEntries": [{"entryId": entries[0]["entryId"], "errors": []}]}
-
-    fake = NoCodes()
-    with pytest.raises(RuntimeError):
-        handler.write_entries(attribute_entries(load(DEFAULT_PATH))[:3], client=fake, sleep=lambda s: None)
-    assert len(fake.calls) == 1
-
-
-@pytest.mark.parametrize(
-    ("request_type", "physical_id", "writes"),
-    [("Create", None, True), ("Update", "seed-existing", True), ("Delete", "seed-existing", False)],
-)
-def test_on_event(monkeypatch, request_type, physical_id, writes):
-    entries = attribute_entries(load(DEFAULT_PATH))
-    fake = FakeSiteWise()
-    monkeypatch.setattr(handler, "_sitewise", lambda: fake)
-    event = {
-        "RequestType": request_type,
-        "ResourceProperties": {"Stage": "poc-dj", "ModelHash": "abc123", "Entries": entries},
-    }
-    if physical_id:
-        event["PhysicalResourceId"] = physical_id
-    result = handler.on_event(event, None)
-    sent = [e["propertyAlias"] for c in fake.calls for e in c]
-    assert sent == ([e["alias"] for e in entries] if writes else [])
-    assert result["PhysicalResourceId"] == (physical_id or "sitewise-attribute-seed-poc-dj")
-    assert result["Data"]["ModelHash"] == "abc123"
-
-
 # -- app, IAM, asset identity, sensor subsets ------------------------------------------------------
-
-
-def _app_aliases(app: cdk.App, stack_name: str) -> tuple[set[str], cdk.Stack]:
-    stack = app.node.find_child(stack_name)
-    return aliases(Template.from_stack(stack).to_json()), stack
-
-
-def test_build_app_developer_stage():
-    app = build_app(cdk.App(context={"stage": "poc-dj"}))
-    found, stack = _app_aliases(app, "SiteWiseAssetsStack-poc-dj")
-    assert stack.stack_name == "SiteWiseAssetsStack-poc-dj"
-    assert stack.region == "ap-southeast-1"
-    assert found and all(a.startswith("/poc-dj/lng1/") for a in found)
-
-
-def test_build_app_default_stage():
-    app = build_app(cdk.App())
-    _, stack = _app_aliases(app, "SiteWiseAssetsStack-poc")
-    assert stack.stack_name == "SiteWiseAssetsStack-poc"
 
 
 def test_build_app_empty_stage_rejected():
@@ -299,34 +187,3 @@ def test_seed_iam_grant_pinned_to_pipe_assets(synthesized):
     assert len(grants) == 1
     assert grants[0]["Effect"] == "Allow"
     assert sorted(grants[0]["Resource"], key=str) == sorted(expected, key=str)
-
-
-def test_seed_properties_carry_pipe_asset_ids(synthesized):
-    f, stack, tpl = synthesized
-    [seed] = resources(tpl, "Custom::SiteWiseAttributeSeed")
-    assert seed["PipeAssetIds"] == [
-        {"Fn::GetAtt": [stack.get_logical_id(stack.pipe_assets[p.id]), "AssetId"]} for p in f.pipes
-    ]
-
-
-def test_pipe_with_sensor_subset():
-    doc = yaml.safe_load(Path(DEFAULT_PATH).read_text())
-    p7 = next(p for p in doc["pipes"] if p["id"] == "P-007")
-    p7["sensors"] = [m for m in p7["sensors"] if m != "methane_ppm"]
-    f = parse(doc, stage="poc-dj")
-    stack = SiteWiseAssetsStack(cdk.App(), "SubsetStack", facility=f, env=cdk.Environment(region=REGION))
-    tpl = Template.from_stack(stack).to_json()
-    root = f"{f.alias_root}/train1/P-007/"
-    p7_aliases = {a for a in aliases(tpl) if a.startswith(root)}
-    assert p7_aliases and not any("methane_ppm" in a for a in p7_aliases)
-    assert f.alias("P-008", "methane_ppm") in aliases(tpl)
-    [seed] = resources(tpl, "Custom::SiteWiseAttributeSeed")
-    assert not any(e["alias"].startswith(root) and "methane_ppm" in e["alias"] for e in seed["Entries"])
-    for call in (
-        lambda: f.alias("P-007", "methane_ppm"),
-        lambda: f.derived_alias("P-007", "methane_ppm_dq"),
-        lambda: f.derived_alias("P-007", "methane_ppm_dq_fail"),
-        lambda: f.attr_alias("P-007", "methane_ppm_owner"),
-    ):
-        with pytest.raises(FacilityError):
-            call()

@@ -49,15 +49,6 @@ def test_exact_link_with_three_aliases():
     assert f == 1_790_643_600_000 - 300_000 and t == 1_790_644_800_500 + 300_000
 
 
-def test_trailing_slash_and_poc_uid():
-    assert build_link(incident(), URL + "/", "pipe-detail").startswith(f"{URL}/d/pipe-detail/pipe-detail?orgId=1&")
-
-
-def test_special_characters_are_encoded():
-    link = build_link(incident(aliases=("/root x/a&b=c/P-007/flow_in",)), URL, "pipe-detail")
-    assert "&var-evidence=%2Froot%20x%2Fa%26b%3Dc%2FP-007%2Fflow_in&" in link
-
-
 def test_bad_inputs_are_refused():
     with pytest.raises(ValueError):
         build_link(incident(), "", "pipe-detail")

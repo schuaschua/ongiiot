@@ -12,12 +12,12 @@ Both roles may also read `/cdk-bootstrap/hnb659fds/version`. Neither has any dir
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | pull request to `main`, push to `main` | `test` (pytest), `synth` (`cdk synth -c stage=poc`, no AWS), `image` (builds and smoke-imports the simulator and detection images, no AWS), `diff` (PRs only, diff role: `cdk diff "*-poc" --method template`). Never deploys. |
-| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc`, from `main` only | `test`, then deploys `*-poc` in the `poc` environment (input `simulator`: `on` or `off`, see section 5) |
-| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc-<initials>`, any branch | `test`, then deploys `*-poc-<initials>` in the `dev` environment |
+| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc`, from `main` only | deploys `*-poc` in the `poc` environment (input `simulator`: `on` or `off`, see section 5) |
+| `.github/workflows/deploy.yml` | manual `workflow_dispatch` with `stage=poc-<initials>`, any branch | deploys `*-poc-<initials>` in the `dev` environment |
 
 Nothing deploys automatically. A push or merge to `main` only runs `ci.yml`. Starting the `deploy` run is the approval: GitHub Team does not support required reviewers on private repos, so there is no separate approval step.
 
-In `deploy.yml`, the `deploy` job needs both `test` and `resolve`. If the tests fail, AWS is never touched.
+In `deploy.yml`, the `deploy` job needs only `resolve`; a deploy does not run the tests (owner decision 2026-09-29, OG-23). The tests run in `ci.yml` on every pull request to `main` and every push to `main`, so code on `main` has normally been tested, but the deploy does not wait for or check that CI run. A manual dispatch of a `poc-<initials>` stage from a branch can deploy untested code: check the branch's CI first.
 
 The CDK CLI is pinned to `aws-cdk@2.1143.0` (Node 22). Python deps come from `uv.lock` (`uv sync --locked`). The deploy builds the simulator image (`sim/Dockerfile`) and the detection image (`detect/Dockerfile`), both linux/amd64, with the runner's Docker and publishes them through the CDK image-publishing bootstrap role; `ci.yml`'s `cdk synth` does not build them. Each image asset excludes the other's code, so a detection-only change does not rebuild or restart the simulator.
 
@@ -57,7 +57,7 @@ Do not add AWS access keys or other AWS secrets.
 
 ## 3. Deploying `poc`
 
-Merge to `main`, then open **Actions → deploy → Run workflow**, choose branch `main`, and enter `stage` = `poc` (or `gh workflow run deploy.yml --ref main -f stage=poc`). The run tests first, then deploys `*-poc`. `poc` only deploys from `main`: the `resolve` job refuses it from any other ref, and the `poc` environment's branch rule is a second guard. Runs for the same stage never overlap (`concurrency: deploy-<stage>`). A running deploy is never cancelled, but a newer queued run can replace an older queued one.
+Merge to `main`, then open **Actions → deploy → Run workflow**, choose branch `main`, and enter `stage` = `poc` (or `gh workflow run deploy.yml --ref main -f stage=poc`). The run deploys `*-poc`; it does not run the tests (`ci.yml` runs them on the pull request and on the push to `main`). `poc` only deploys from `main`: the `resolve` job refuses it from any other ref, and the `poc` environment's branch rule is a second guard. Runs for the same stage never overlap (`concurrency: deploy-<stage>`). A running deploy is never cancelled, but a newer queued run can replace an older queued one.
 
 ## 4. Deploying a developer stage
 
@@ -67,7 +67,7 @@ In GitHub, open **Actions → deploy → Run workflow**, pick your branch, and e
 gh workflow run deploy.yml --ref <branch> -f stage=poc-dj
 ```
 
-The stage must be `poc-` followed by 1 to 12 lowercase letters or digits (`facility/model.py` `STAGE_RE`, checked with `fullmatch`). The `resolve` job refuses `poc` from a branch other than `main`, `prod`, `poc-DJ!` and anything else before any AWS call. The tests must pass, then the deploy targets only `*-poc-<initials>`.
+The stage must be `poc-` followed by 1 to 12 lowercase letters or digits (`facility/model.py` `STAGE_RE`, checked with `fullmatch`). The `resolve` job refuses `poc` from a branch other than `main`, `prod`, `poc-DJ!` and anything else before any AWS call. The deploy then targets only `*-poc-<initials>`. It does not run the tests, so a branch can deploy untested code.
 
 ## 5. Stopping and starting the simulator (and detection)
 
@@ -241,7 +241,7 @@ After pass 1 has scored every sensor, pass 2 runs the leak checks on the same wi
 | `leak_mass_balance` | mass goes missing: `sum(flow_in - flow_out) / sum(flow_in)` over the paired 1 Hz samples of the last `avg_s` (60 s, at least `min_points` 30 paired seconds) is at least `min_frac` (2%). No finding when the mean `flow_in` is below `min_flow_frac` (1%) of the `flow_in` contract span (a pipe barely flowing), or when the `flow_in` and `flow_out` units differ. A matching drop of `pressure_out` (against `pressure_in`, the last 60 s vs the rest of the window, at least `pressure_drop_frac` 0.6%) is cited as corroboration and adds both pressures to the evidence; it never changes the confidence | `frac / full_frac` (8%), capped at 1 | `flow_in`, `flow_out` trusted; `pressure_out` and `pressure_in` optional |
 | `leak_methane_rise` | methane around the pipe is well above its peers': the mean of `methane_ppm` over the last `avg_s` (60 s) minus the median of the same mean on the other pipes of its `peer_group` is at least `min_ppm` (30 ppmv). Untrusted peers are left out of the median and named; peers with too little data (fewer than `min_points` samples) are left out and named too; at least 2 usable peers are needed, and all must share the pipe's unit | `excess / full_ppm` (300 ppmv), capped at 1 | `methane_ppm` trusted |
 
-Calibration on the simulator (`tests/test_leak_detectors.py`): normal output never comes close. Over 4 simulated days (24 pipes at 1 Hz, with the trailing 60 s evaluated once a minute, as the runs do) the mean loss fraction peaked at 0.16% (min 2%), methane at 0.6 ppmv above the peer median (min 30 ppmv) and the relative `pressure_out` drop at 0.4% (corroboration 0.6%). No leak finding appears in 4 x 30 consecutive one-minute runs at different times of day and seeds. The default injected leak (10% of the pipe's mean flow, methane rising toward 600 ppmv with a 20 s time constant) scores confidence 1.0 on both checks once it has been in the window for 60 s, and at least 0.8 by the second run after it enters the window.
+Calibration on the simulator (measured when the detector was built; the long calibration replays were removed from the test suite in OG-23, which keeps one short healthy-window check): normal output never comes close. Over 4 simulated days (24 pipes at 1 Hz, with the trailing 60 s evaluated once a minute, as the runs do) the mean loss fraction peaked at 0.16% (min 2%), methane at 0.6 ppmv above the peer median (min 30 ppmv) and the relative `pressure_out` drop at 0.4% (corroboration 0.6%). No leak finding appears in 4 x 30 consecutive one-minute runs at different times of day and seeds. The default injected leak (10% of the pipe's mean flow, methane rising toward 600 ppmv with a 20 s time constant) scores confidence 1.0 on both checks once it has been in the window for 60 s, and at least 0.8 by the second run after it enters the window.
 
 **Where to see findings.** Every finding joins its pipe's incident (see "Incidents and alert state" below). The run's summary log line also lists pass 2's findings, as `"findings":[{"detector":…,"pipe":…,"confidence":…,"explanation":…,"evidence_aliases":[…]}]` (confidence to 3 decimals; empty when there are none). `"suppressed":[{"detector":…,"pipe":…,"reason":…,"scope":…}]` lists each pipe where a check could not run because a sensor it needs is untrusted (`"scope":"detector"`) or where only some of its features were skipped (`"scope":"feature"`, `outlier_peer`) (for example `flow_out untrusted (dq 0.00 < dq_min 0.5)`), so a silenced check is visible. `detectors` and `ran_ok` list the leak checks too; a leak check that failed (or returned a malformed finding) is logged on its own error line and left out of `ran_ok`.
 
@@ -293,7 +293,7 @@ The flagged features are listed worst first, each with the sensors behind it (fo
 
 Findings go to the run summary line with the leak findings (`"findings":[{"detector":"outlier_peer",…}]`) and into the pipe's incident. On a leak, the outlier finding names the same pipe as the leak findings, so it joins the same incident (one OPEN incident per pipe, AD-6) as another contributing detector rather than raising a second alert.
 
-Calibration on the simulator (`tests/test_outlier_peer.py`): over 6 x 30 consecutive one-minute runs of normal output (seeds 0, 1, 2, 3, 5, different times of day, all 24 pipes) the largest |z| was 2.3 (`pressure_ratio`), 1.5 (`temperature`), 0.5 (`methane_ppm`) and 0.3 (`flow_ratio`), against `min_z` 4. The static steady-state spread between peers dominates `pressure_ratio` and `temperature`; across 300 seeds (steady state plus the daily temperature cycle, without noise) it stays below |z| 2.6 and 1.9 with these floors. A default leak on P-007 scores 0.7 after 5 s in the window and 1.0 from about 10 s, so always by the second run after it enters the window (by then `methane_ppm` is at z 330 or more and `flow_ratio` at |z| 17 or more), and no other pipe of the group is flagged (their largest |z| was 1.9). The leak's `pressure_ratio` shift (about 0.01) is within the normal spread between flare-header peers, so it is rarely one of the flagged features.
+Calibration on the simulator (measured when the detector was built; the 30-minute replays were removed from the test suite in OG-23, which keeps one short healthy-window check): over 6 x 30 consecutive one-minute runs of normal output (seeds 0, 1, 2, 3, 5, different times of day, all 24 pipes) the largest |z| was 2.3 (`pressure_ratio`), 1.5 (`temperature`), 0.5 (`methane_ppm`) and 0.3 (`flow_ratio`), against `min_z` 4. The static steady-state spread between peers dominates `pressure_ratio` and `temperature`; across 300 seeds (steady state plus the daily temperature cycle, without noise) it stays below |z| 2.6 and 1.9 with these floors. A default leak on P-007 scores 0.7 after 5 s in the window and 1.0 from about 10 s, so always by the second run after it enters the window (by then `methane_ppm` is at z 330 or more and `flow_ratio` at |z| 17 or more), and no other pipe of the group is flagged (their largest |z| was 1.9). The leak's `pressure_ratio` shift (about 0.01) is within the normal spread between flare-header peers, so it is rarely one of the flagged features.
 
 On a developer stage, the leak injection in "Leak checks" above also raises `outlier_peer` on P-007 in the same run as the leak findings; no other pipe should show an outlier.
 
@@ -389,12 +389,13 @@ Protected:
 - Only this repo can get AWS credentials. Forks and other repos are denied by AWS.
 - A job that declares no environment (on a pull request or any branch) cannot assume the deploy role. AWS denies it.
 - The PR `diff` job holds only the diff role, which can reach only the lookup role. It has no write access.
-- A `poc` deploy needs someone to start it deliberately, passing tests, and the `main` branch.
+- A `poc` deploy needs someone to start it deliberately and the `main` branch. It does not require passing tests; `ci.yml` tests pull requests and pushes to `main`, but the deploy does not wait for them.
 
 Not protected (residual risk):
 
 - **All stages share one account and one set of CDK bootstrap roles.** The deploy role can assume the same `cfn-exec` role (admin in this account) for every stage. A run that holds `dev` credentials can therefore technically reach `poc`, or any other resource in the account, including `GitHubOidcStack` itself.
 - **There is no second-person approval for `poc`.** Anyone with write access can start a `poc` deploy from `main`.
+- **A deploy does not run the tests.** Only `ci.yml` does, on pull requests and pushes to `main`. A dispatch of a `poc-<initials>` stage from a branch can deploy code whose tests fail (OG-23).
 - **The `main`-only rule for `poc` is enforced by AWS against PRs and branch runs without an environment, not against an edited workflow on the `dev` path.** Anyone who can push a branch and dispatch `deploy.yml` can edit the workflow on that branch to run arbitrary commands in the `dev` environment, with no further check. The stage check and the `*-<stage>` target are workflow code, not an AWS boundary.
 - **An edited workflow that declares `dev` gets the deploy role.** A same-repo pull request or branch can change its workflow to set `environment: dev`. Its token then has the `sub` `repo:schuaschua@83538399/ongiiot@1392670803:environment:dev`, which the deploy role trusts. Combined with the first point, that reaches `poc` too.
 - **The diff role can read the whole account.** The lookup role carries the account-wide `ReadOnlyAccess` managed policy. A same-repo pull request that edits `ci.yml` can read data across the account, such as S3 objects, logs, Lambda environment variables and SSM parameters.
@@ -412,4 +413,4 @@ Per-stage bootstrap isolation (separate qualifiers or accounts per stage) would 
 
 - **`Not authorized to perform sts:AssumeRoleWithWebIdentity`**: the run is from a fork or another repo, the job lacks `id-token: write`, the job's environment is not `poc` or `dev` (deploy role), the job is not a `pull_request` run (diff role), or the role variable is wrong.
 - **`cdk diff` / `deploy` fails assuming `cdk-hnb659fds-*`**: the account or region is not bootstrapped, or the qualifier changed. Re-bootstrap, or update `BOOTSTRAP_QUALIFIER` in `infra/stacks/github_oidc.py` and redeploy step 1.
-- **The `deploy` job never starts**: the `test` job failed, or the `resolve` job refused the stage. Check those jobs first.
+- **The `deploy` job never starts**: the `resolve` job refused the stage. Check that job first.

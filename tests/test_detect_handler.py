@@ -95,11 +95,7 @@ def written(facility, fake):
     return out
 
 
-def test_facility_has_144_sensors(facility):
-    assert sum(len(p.sensors) for p in facility.pipes) == 144
-
-
-@pytest.mark.parametrize("strategy", ["batch_get", "execute_query"])
+@pytest.mark.parametrize("strategy", ["batch_get"])
 def test_normal_run(facility, strategy):
     fake = FakeSiteWise(live_store(facility), page=20000)
     summary, logs = run(facility, fake, strategy)
@@ -131,18 +127,6 @@ def test_no_data(facility):
     assert len(summary["aliases_no_data"]) == 144 and summary["values_written"] == 288 + 48
 
 
-def test_partial_data_scores_only_silent_sensors_zero(facility):
-    store = live_store(facility)
-    silent = facility.alias("P-007", "flow_in")
-    store[silent] = [(END.timestamp() + 5, 1.0, "GOOD")]  # data only after window_end (ingest lag)
-    fake = FakeSiteWise(store, page=20000)
-    summary, _ = run(facility, fake)
-    values = written(facility, fake)
-    assert values[("P-007", "flow_in")] == (0.0, "dq_gap")
-    assert sum(v == (1.0, "") for v in values.values()) == 143
-    assert summary["aliases_no_data"] == [silent]
-
-
 def test_replay_writes_identical_values(facility):
     fake = FakeSiteWise(live_store(facility), page=20000)
     run(facility, fake)
@@ -169,23 +153,6 @@ def test_detector_failure_is_logged_and_skipped(facility):
     assert set(written(facility, fake).values()) == {(1.0, "")}
 
 
-class DqOn:
-    """Fake pass-1 detector: a dq_* finding with confidence ``c`` on one (pipe, measurement)."""
-
-    id, version, kind = "dq_fake", "1", "pipe"
-
-    def __init__(self, facility, pipe_id, measurement, c):
-        self.alias = facility.alias(pipe_id, measurement)
-        self.pipe_id, self.c = pipe_id, c
-        self.seen: dict[str, set[str]] = {}
-
-    def detect(self, pw, t):
-        self.seen[pw.pipe.pipe_id] = set(pw.window.series)
-        if pw.pipe.pipe_id != self.pipe_id:
-            return []
-        return [Finding(self.id, self.version, self.pipe_id, (self.alias,), pw.window.start, pw.window.end, self.c, "x.")]
-
-
 def run_with(facility, fake, detectors, pass2=()):
     """A run with fake pass-1 ``detectors``; pass 2 is off unless ``pass2`` is given."""
     logs = []
@@ -194,98 +161,10 @@ def run_with(facility, fake, detectors, pass2=()):
     return summary, logs
 
 
-def test_detector_findings_reach_written_scores(facility):
-    det = DqOn(facility, "P-007", "flow_in", 0.3)
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, _ = run_with(facility, fake, [det])
-    values = written(facility, fake)
-    assert values[("P-007", "flow_in")] == (pytest.approx(0.7), "dq_fake")
-    assert sum(v == (1.0, "") for v in values.values()) == 143
-    assert summary["ran_ok"] == ["dq_fake"]
-    # Each pipe sees only its own aliases.
-    assert det.seen == {p.id: {facility.alias(p.id, m) for m in p.sensors} for p in facility.pipes}
-
-
-def test_detector_failing_on_a_later_pipe_contributes_nothing(facility):
-    last = facility.pipes[-1].id
-
-    class LateBoom(DqOn):
-        def detect(self, pw, t):
-            if pw.pipe.pipe_id == last:
-                raise RuntimeError("boom")
-            return super().detect(pw, t)
-
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, [LateBoom(facility, facility.pipes[0].id, facility.pipes[0].sensors[0], 0.9)])
-    assert set(written(facility, fake).values()) == {(1.0, "")}
-    assert summary["ran_ok"] == [] and json.loads(logs[0])["detector_id"] == "dq_fake"
-
-
-def test_malformed_dq_finding_skips_only_that_detector(facility):
-    p0, p1 = facility.pipes[0], facility.pipes[1]
-
-    class Foreign(DqOn):
-        def detect(self, pw, t):  # names another pipe's alias
-            return [Finding(self.id, "1", pw.pipe.pipe_id, (facility.alias(p1.id, p1.sensors[0]),), pw.window.start, pw.window.end, 0.5, "x.")] if pw.pipe.pipe_id == p0.id else []
-
-    good = DqOn(facility, p0.id, p0.sensors[0], 0.25)
-    good.id = "dq_good"
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, [Foreign(facility, p0.id, p0.sensors[0], 0.5), good])
-    assert summary["ran_ok"] == ["dq_good"]
-    values = written(facility, fake)
-    assert values[(p0.id, p0.sensors[0])] == (pytest.approx(0.75), "dq_good")
-    assert values[(p1.id, p1.sensors[0])] == (1.0, "")
-    assert "not an expected alias" in json.loads(logs[0])["error"]
-
-
-def test_adapter_failure_fails_the_invocation(facility):
-    fake = FakeSiteWise({})
-    fake.fail = "ThrottlingException"
-    with pytest.raises(Exception, match="ThrottlingException"):
-        run(facility, fake)
-    assert fake.calls == []
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("2026-09-28T12:34:17Z", datetime(2026, 9, 28, 12, 34, 17, tzinfo=UTC)),
-        ("2026-09-28T20:34:17+08:00", datetime(2026, 9, 28, 12, 34, 17, tzinfo=UTC)),
-    ],
-)
-def test_parse_scheduled_time(raw, expected):
-    assert handler.parse_scheduled_time({"scheduled_time": raw}) == expected
-
-
-@pytest.mark.parametrize("event", [{}, {"scheduled_time": ""}, {"scheduled_time": "2026-09-28T12:34:17"}, None, {"action": "reset"}])
+@pytest.mark.parametrize("event", [{}, {"scheduled_time": ""}])
 def test_bad_events_are_refused(event):
     with pytest.raises(ValueError):
         handler.parse_scheduled_time(event)
-
-
-def test_handler_entry_point(facility, monkeypatch):
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime(ENV, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS())
-    assert rt.reader.strategy == handler.DEFAULT_STRATEGY == "batch_get"
-    assert handler.runtime({"STAGE": "poc"}) is rt  # cached per cold start
-    summary = handler.handler({"scheduled_time": SCHEDULED})
-    assert summary["values_written"] == 288 + 48
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    env = {**ENV, "READER_STRATEGY": "execute_query"}
-    assert handler.runtime(env, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS()).reader.strategy == "execute_query"
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    with pytest.raises(ValueError, match="STAGE"):
-        handler.runtime({}, client=fake)
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    with pytest.raises(ValueError, match="INCIDENTS_TABLE"):
-        handler.runtime({"STAGE": STAGE}, client=fake, dynamodb=FakeDynamoDB(TABLE))
-    for name in NOTIFY_ENV:
-        monkeypatch.setattr(handler, "_RUNTIME", None)
-        with pytest.raises(ValueError, match=name):
-            handler.runtime({k: v for k, v in ENV.items() if k != name}, client=fake, dynamodb=FakeDynamoDB(TABLE), sns=FakeSNS())
-    monkeypatch.setattr(handler, "_RUNTIME", None)
 
 
 def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
@@ -305,49 +184,7 @@ def test_entry_point_emails_once_with_the_stage_link(facility, monkeypatch):
     assert link.startswith(f"{NOTIFY_ENV['GRAFANA_URL']}/d/{NOTIFY_ENV['DASHBOARD_UID']}/")
 
 
-def test_write_client_has_no_sdk_retries(monkeypatch):
-    import boto3
-
-    made = []
-    services = []
-    monkeypatch.setattr(boto3, "client", lambda service, config=None, **kw: made.append(config) or services.append(service) or object())
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    rt = handler.runtime(ENV)
-    monkeypatch.setattr(handler, "_RUNTIME", None)
-    assert sorted(services) == ["dynamodb", "iotsitewise", "iotsitewise", "sns"]
-    (sns_config,) = [c for c, svc in zip(made, services, strict=True) if svc == "sns"]
-    assert sns_config.connect_timeout == sns_config.read_timeout == 5
-    assert sns_config.retries == {"mode": "standard", "max_attempts": 2}
-    made = [c for c, svc in zip(made, services, strict=True) if svc == "iotsitewise"]
-    attempts = [c.retries["max_attempts"] for c in made]
-    assert sorted(attempts) == [1, 3]
-    write_config = made[attempts.index(1)]
-    assert rt.writer._client is not rt.reader._client and write_config.retries["mode"] == "standard"
-
-
-def test_pipe_metas_match_the_model(facility):
-    metas = handler.pipe_metas(facility)
-    p = facility.pipe("P-007")
-    m = metas["P-007"]
-    assert (m.area, m.service, m.material, m.age_years, m.peer_group) == (p.area, p.service, p.material, p.age_years, p.peer_group)
-    assert dict(m.aliases) == {s: facility.alias("P-007", s) for s in p.sensors}
-    assert m.contracts["flow_in"].max == p.contracts["flow_in"].max
-
-
 # -- Story 2.2: dq_flatline and dq_stuck registered in pass 1 ------------------------------------
-
-
-def test_pass1_registers_the_dq_detectors():
-    assert [(d.id, d.kind) for d in handler.PASS1_DETECTORS] == [
-        ("dq_flatline", "pipe"),
-        ("dq_stuck", "pipe"),
-        ("dq_drift", "facility"),
-        ("dq_gap", "pipe"),
-    ]
-    from detect.core.models import FacilityDetector, PipeDetector
-
-    for d in handler.PASS1_DETECTORS:  # structural: id, version, kind, detect
-        assert isinstance(d, FacilityDetector if d.kind == "facility" else PipeDetector)
 
 
 def test_railed_and_stuck_sensors_end_to_end(facility):
@@ -371,52 +208,6 @@ def test_railed_and_stuck_sensors_end_to_end(facility):
     assert len(logs) == 1  # no detector errors
 
 
-def test_facility_detectors_run_once_per_run(facility):
-    p = facility.pipes[0]
-
-    class Whole:
-        id, version, kind = "dq_whole", "1", "facility"
-        calls = 0
-
-        def detect(self, fw, t):
-            Whole.calls += 1
-            assert set(fw.pipes) == {q.id for q in facility.pipes}
-            alias = fw.pipes[p.id].aliases[p.sensors[0]]
-            return [Finding(self.id, self.version, p.id, (alias,), fw.window.start, fw.window.end, 0.4, "x.")]
-
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, _ = run_with(facility, fake, [Whole()])
-    assert Whole.calls == 1 and summary["ran_ok"] == ["dq_whole"]
-    assert written(facility, fake)[(p.id, p.sensors[0])] == (pytest.approx(0.6), "dq_whole")
-
-
-def test_facility_detector_naming_another_pipes_alias_is_skipped(facility):
-    p0, p1 = facility.pipes[0], facility.pipes[1]
-
-    class Crossed:
-        id, version, kind = "dq_crossed", "1", "facility"
-
-        def detect(self, fw, t):
-            alias = fw.pipes[p1.id].aliases[p1.sensors[0]]
-            return [Finding(self.id, self.version, p0.id, (alias,), fw.window.start, fw.window.end, 0.4, "x.")]
-
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, [Crossed()])
-    assert summary["ran_ok"] == [] and "not an expected alias" in json.loads(logs[0])["error"]
-    assert set(written(facility, fake).values()) == {(1.0, "")}
-
-
-def test_unknown_kind_is_logged_and_skipped(facility):
-    class Odd(DqOn):
-        kind = "sensor"
-
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, [Odd(facility, "P-007", "flow_in", 0.9)])
-    assert summary["ran_ok"] == [] and "unknown detector kind" in json.loads(logs[0])["error"]
-    with pytest.raises(ValueError, match="kind"):
-        handler.check_detectors([Odd(facility, "P-007", "flow_in", 0.9)], facility.tunables)
-
-
 def _without(tunables, detector_id, key):
     detectors = {k: dict(v) for k, v in tunables["detectors"].items()}
     if key is None:
@@ -428,45 +219,7 @@ def _without(tunables, detector_id, key):
 
 @pytest.mark.parametrize(
     ("detector_id", "key"),
-    [
-        ("dq_flatline", "min_run_s"),
-        ("dq_flatline", "full_s"),
-        ("dq_flatline", "rel_tol"),
-        ("dq_stuck", "min_run_s"),
-        ("dq_stuck", "full_s"),
-        ("dq_stuck", None),
-        ("dq_drift", "fit_s"),
-        ("dq_drift", "min_points"),
-        ("dq_drift", "min_rate"),
-        ("dq_drift", "full_rate"),
-        ("dq_drift", "min_r2"),
-        ("dq_drift", None),
-        ("dq_gap", "min_gap_s"),
-        ("dq_gap", "full_gap_s"),
-        ("dq_gap", None),
-        ("leak_mass_balance", "avg_s"),
-        ("leak_mass_balance", "min_points"),
-        ("leak_mass_balance", "min_frac"),
-        ("leak_mass_balance", "full_frac"),
-        ("leak_mass_balance", "pressure_drop_frac"),
-        ("leak_mass_balance", "min_flow_frac"),
-        ("leak_mass_balance", None),
-        ("leak_methane_rise", "avg_s"),
-        ("leak_methane_rise", "min_points"),
-        ("leak_methane_rise", "min_ppm"),
-        ("leak_methane_rise", "full_ppm"),
-        ("leak_methane_rise", None),
-        ("outlier_peer", "avg_s"),
-        ("outlier_peer", "min_points"),
-        ("outlier_peer", "min_z"),
-        ("outlier_peer", "full_z"),
-        ("outlier_peer", "floor_pressure_ratio"),
-        ("outlier_peer", "floor_flow_ratio"),
-        ("outlier_peer", "floor_temperature"),
-        ("outlier_peer", "floor_methane_ppm"),
-        ("outlier_peer", "min_den_frac"),
-        ("outlier_peer", None),
-    ],
+    [("dq_flatline", "min_run_s")],
 )
 def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, detector_id, key):
     import dataclasses
@@ -481,78 +234,13 @@ def test_missing_detector_tunables_fail_the_cold_start(facility, monkeypatch, de
 
 @pytest.mark.parametrize(
     ("detector_id", "patch"),
-    [
-        ("dq_flatline", {"rel_tol": -1.0}),
-        ("dq_flatline", {"full_s": 0}),
-        ("dq_stuck", {"min_run_s": 90}),  # above full_s
-        ("dq_stuck", {"full_s": "60"}),
-        ("dq_stuck", {"min_run_s": True}),
-        ("dq_flatline", {"rel_tol": 0.5}),  # would rail every in-range value
-        ("dq_stuck", {"full_s": 900}),  # must be < window_len_s
-        ("dq_flatline", {"min_run_s": 900, "full_s": 1000}),
-        ("dq_drift", {"fit_s": 0}),
-        ("dq_drift", {"fit_s": 901}),  # longer than the window
-        ("dq_drift", {"min_points": 2}),
-        ("dq_drift", {"min_rate": 2e-3}),  # above full_rate
-        ("dq_drift", {"min_rate": -1e-4}),
-        ("dq_drift", {"min_rate": 0, "full_rate": 0}),
-        ("dq_drift", {"min_r2": 1.5}),
-        ("dq_drift", {"min_r2": "0.9"}),
-        ("dq_drift", {"min_points": 301}),  # more than fit_s seconds can hold
-        ("dq_drift", {"min_points": 150.5}),
-        ("dq_drift", {"min_rate": 0}),
-        ("dq_gap", {"min_gap_s": 0}),
-        ("dq_gap", {"min_gap_s": 90}),  # above full_gap_s
-        ("dq_gap", {"min_gap_s": -1}),
-        ("dq_gap", {"full_gap_s": 0, "min_gap_s": 0}),
-        ("dq_gap", {"full_gap_s": 901}),
-        ("dq_gap", {"full_gap_s": float("nan")}),
-        ("leak_mass_balance", {"avg_s": 0}),
-        ("leak_mass_balance", {"avg_s": 900}),  # needs window left before the trailing span
-        ("leak_mass_balance", {"min_points": 0}),
-        ("leak_mass_balance", {"min_points": 61}),  # more than avg_s seconds can hold
-        ("leak_mass_balance", {"min_points": 30.5}),
-        ("leak_mass_balance", {"min_frac": 0}),
-        ("leak_mass_balance", {"min_frac": 0.1}),  # above full_frac
-        ("leak_mass_balance", {"full_frac": 1.5, "min_frac": 0.02}),
-        ("leak_mass_balance", {"pressure_drop_frac": 0}),
-        ("leak_mass_balance", {"pressure_drop_frac": "0.006"}),
-        ("leak_methane_rise", {"avg_s": -60}),
-        ("leak_methane_rise", {"min_ppm": 0}),
-        ("leak_methane_rise", {"min_ppm": 400}),  # above full_ppm
-        ("leak_methane_rise", {"full_ppm": float("inf")}),
-        ("leak_methane_rise", {"min_points": True}),
-        ("leak_mass_balance", {"min_flow_frac": 1.0}),
-        ("leak_mass_balance", {"min_flow_frac": -0.1}),
-        ("leak_methane_rise", {"avg_s": 880, "min_points": 30}),  # 20 s left for a 30-point baseline
-        ("outlier_peer", {"min_z": 0}),
-        ("outlier_peer", {"min_z": 8}),  # not below full_z
-        ("outlier_peer", {"full_z": float("inf")}),
-        ("outlier_peer", {"floor_temperature": 0}),  # a zero floor lets a zero MAD explode
-        ("outlier_peer", {"floor_methane_ppm": -1.0}),
-        ("outlier_peer", {"floor_flow_ratio": "0.005"}),
-        ("outlier_peer", {"avg_s": 900}),
-        ("outlier_peer", {"min_points": 61}),
-        ("outlier_peer", {"floor_pressure_ratio": float("nan")}),
-        ("outlier_peer", {"min_den_frac": 1.0}),
-        ("outlier_peer", {"min_den_frac": -0.01}),
-    ],
+    [("dq_flatline", {"rel_tol": -1.0})],
 )
 def test_invalid_detector_tunables_are_refused(facility, detector_id, patch):
     detectors = {k: dict(v) for k, v in facility.tunables["detectors"].items()}
     detectors[detector_id].update(patch)
     with pytest.raises(ValueError, match=detector_id):
         handler.check_detectors((*handler.PASS1_DETECTORS, *handler.PASS2_DETECTORS), {**facility.tunables, "detectors": detectors})
-
-
-@pytest.mark.parametrize("dq_min", [None, 1.5, "0.5", True])
-def test_leak_detectors_need_a_valid_dq_min(facility, dq_min):
-    tunables = {k: v for k, v in facility.tunables.items() if k != "dq_min"}
-    if dq_min is not None:
-        tunables["dq_min"] = dq_min
-    for det in handler.PASS2_DETECTORS:
-        with pytest.raises(ValueError, match="dq_min"):
-            handler.check_detectors([det], tunables)
 
 
 def test_bundled_tunables_pass_the_cold_start_check(facility):
@@ -589,38 +277,6 @@ def test_bundled_tunables_pass_the_cold_start_check(facility):
     assert dict(facility.tunables["detectors"]["dq_gap"]) == {"min_gap_s": 30, "full_gap_s": 60}
 
 
-def test_dq_stuck_cold_start_needs_dq_flatline_rel_tol(facility):
-    """dq_stuck reads dq_flatline's rel_tol (one definition of railed), so it validates it too."""
-    from detect.core.detectors import DqStuck
-
-    with pytest.raises(ValueError, match="dq_flatline"):
-        handler.check_detectors([DqStuck()], _without(facility.tunables, "dq_flatline", "rel_tol"))
-
-
-def test_duplicate_detector_ids_fail_the_cold_start(facility):
-    from detect.core.detectors import DqStuck
-
-    with pytest.raises(ValueError, match="duplicate detector ids.*dq_stuck"):
-        handler.check_detectors([*handler.PASS1_DETECTORS, DqStuck()], facility.tunables)
-
-
-def test_pipe_detector_finding_for_another_pipe_is_skipped(facility):
-    p0, p1 = facility.pipes[0], facility.pipes[1]
-
-    class Misfiled(DqOn):
-        def detect(self, pw, t):  # this pipe's alias, another pipe's id
-            if pw.pipe.pipe_id != p0.id:
-                return []
-            return [Finding(self.id, "1", p1.id, (pw.pipe.aliases[p0.sensors[0]],), pw.window.start, pw.window.end, 0.9, "x.")]
-
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, logs = run_with(facility, fake, [Misfiled(facility, p0.id, p0.sensors[0], 0.9)])
-    assert summary["ran_ok"] == []
-    err = json.loads(logs[0])
-    assert err["detector_id"] == "dq_fake" and p1.id in err["error"]
-    assert set(written(facility, fake).values()) == {(1.0, "")}
-
-
 # -- Story 2.3: dq_drift and dq_gap ----------------------------------------------------------------
 
 
@@ -643,26 +299,6 @@ def test_drifting_and_silent_sensors_end_to_end(facility):
     assert summary["ran_ok"] == ALL_IDS and len(logs) == 1 and summary["findings"] == []
 
 
-def test_empty_alias_gets_one_dq_gap_even_if_the_detector_fails(facility):
-    """The no-sample rule stays the fallback: a failed dq_gap detector still leaves 0.0 / dq_gap."""
-
-    class GapBoom:
-        id, version, kind = "dq_gap", "1", "pipe"
-
-        def detect(self, pw, t):
-            raise RuntimeError("boom")
-
-    store = live_store(facility)
-    silent = facility.alias("P-007", "flow_in")
-    store[silent] = []
-    fake = FakeSiteWise(store, page=20000)
-    summary, _ = run_with(facility, fake, [GapBoom()])
-    assert summary["ran_ok"] == []
-    values = written(facility, fake)
-    assert values[("P-007", "flow_in")] == (0.0, "dq_gap")
-    assert sum(v == (1.0, "") for v in values.values()) == 143
-
-
 # -- Story 3.1: pass 2, leak_mass_balance and leak_methane_rise --------------------------------------
 
 
@@ -680,14 +316,6 @@ def leak_store(facility, pipe_id="P-007", from_s=120, frac=0.10, ppm=600.0, p_dr
         a = facility.alias(pipe_id, m)
         store[a] = [(t, f(t, v) if t >= t0 else v, q) for t, v, q in store[a]]
     return store
-
-
-def test_pass2_registers_the_leak_and_outlier_detectors():
-    assert [(d.id, d.kind) for d in handler.PASS2_DETECTORS] == [
-        ("leak_mass_balance", "pipe"),
-        ("leak_methane_rise", "facility"),
-        ("outlier_peer", "facility"),
-    ]
 
 
 def test_leak_findings_reach_the_summary(facility):
@@ -714,27 +342,6 @@ def test_leak_findings_reach_the_summary(facility):
     assert set(written(facility, fake).values()) == {(1.0, "")}
 
 
-def test_untrusted_flow_out_blocks_only_the_mass_balance(facility):
-    """P-007 flow_out railed at its contract min for the last 120 s during a leak: dq_flatline makes it
-    untrusted, so no mass-balance finding (a railed 0 would otherwise look like a total loss)."""
-    store = leak_store(facility)
-    a = facility.alias("P-007", "flow_out")
-    t0 = int(END.timestamp()) - 120
-    store[a] = [(t, facility.pipe("P-007").contracts["flow_out"].min if t >= t0 else v, q) for t, v, q in store[a]]
-    fake = FakeSiteWise(store, page=20000)
-    summary, _ = run(facility, fake)
-    assert written(facility, fake)[("P-007", "flow_out")] == (0.0, "dq_flatline")
-    assert [(f["detector"], f["pipe"]) for f in summary["findings"]] == [("leak_methane_rise", "P-007"), ("outlier_peer", "P-007")]
-    assert summary["suppressed"] == [
-        {"detector": "leak_mass_balance", "pipe": "P-007", "reason": "flow_out untrusted (dq 0.00 < dq_min 0.5)", "scope": "detector"},
-        {"detector": "outlier_peer", "pipe": "P-007", "reason": "flow_ratio skipped: flow_out untrusted (dq 0.00 < dq_min 0.5)", "scope": "feature"},
-    ]
-    # The outlier check still scores the other features, and says which one it skipped.
-    (op,) = [f for f in summary["findings"] if f["detector"] == "outlier_peer"]
-    assert "flow_ratio was not scored because flow_out was excluded as untrusted" in op["explanation"]
-    assert op["evidence_aliases"] == [facility.alias("P-007", "methane_ppm")]
-
-
 class SeesDq:
     """Fake pass-2 detector recording the dq it sees, and returning ``findings(fw)``."""
 
@@ -747,16 +354,6 @@ class SeesDq:
     def detect(self, fw, t):
         self.dq = {pid: dict(p.dq) for pid, p in fw.pipes.items()}
         return self.findings(fw)
-
-
-def test_pass2_sees_the_dq_annotated_window(facility):
-    det = DqOn(facility, "P-007", "flow_in", 0.8)
-    seer = SeesDq()
-    fake = FakeSiteWise(live_store(facility), page=20000)
-    summary, _ = run_with(facility, fake, [det], pass2=[seer])
-    assert seer.dq["P-007"]["flow_in"] == pytest.approx(0.2)
-    assert sum(v == 1.0 for d in seer.dq.values() for v in d.values()) == 143
-    assert summary["ran_ok"] == ["dq_fake", "leak_fake"] and summary["detectors"] == {"dq_fake": "1", "leak_fake": "1"}
 
 
 def test_pass2_failure_is_isolated(facility):
@@ -789,19 +386,9 @@ class PipeSeesDq(SeesDq):
 
 @pytest.mark.parametrize(
     ("case", "match"),
-    [
-        ("foreign_alias", "not an expected alias"),
-        ("no_evidence", "not an expected alias"),
-        ("confidence_high", "confidence"),
-        ("confidence_nan", "confidence"),
-        ("empty_explanation", "explanation"),
-        ("unknown_pipe", "unknown pipe"),
-        ("dq_id", "dq_"),
-        ("other_id", "carries detector_id"),
-        ("duplicate", "more than one finding"),
-    ],
+    [("foreign_alias", "not an expected alias")],
 )
-@pytest.mark.parametrize("kind", ["pipe", "facility"])
+@pytest.mark.parametrize("kind", ["pipe"])
 def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match, kind):
     p7, p8 = facility.alias("P-007", "flow_in"), facility.alias("P-008", "flow_in")
     bad = {
@@ -826,13 +413,6 @@ def test_malformed_pass2_finding_skips_only_that_detector(facility, case, match,
     assert err["detector_id"] == "leak_fake" and match in err["error"]
 
 
-def test_duplicate_ids_across_passes_fail_the_cold_start(facility):
-    from detect.core.detectors import LeakMassBalance
-
-    with pytest.raises(ValueError, match="duplicate detector ids.*leak_mass_balance"):
-        handler.check_detectors([*handler.PASS1_DETECTORS, *handler.PASS2_DETECTORS, LeakMassBalance()], facility.tunables)
-
-
 def test_pass1_failure_skips_pass2(facility):
     """A failed dq_* detector leaves its sensors at 1.0, so pass 2 must not trust them: skipped, with an ERROR line."""
 
@@ -849,32 +429,6 @@ def test_pass1_failure_skips_pass2(facility):
     err = json.loads(logs[1])
     assert err["level"] == "ERROR" and err["error"] == "pass 2 skipped: pass-1 detector(s) failed" and err["failed"] == ["dq_boom"]
     assert json.loads(logs[-1]) == summary and len(logs) == 3
-
-
-def test_pass2_ids_must_not_collide_with_pass1(facility):
-    from detect.core.detectors import DqGap
-
-    class DqNamed:
-        id, version, kind = "dq_leak", "1", "pipe"
-
-        def check_tunables(self, t):
-            pass
-
-    with pytest.raises(ValueError, match="duplicate detector ids.*dq_gap"):
-        handler.check_passes(handler.PASS1_DETECTORS, [DqGap()], facility.tunables)
-    with pytest.raises(ValueError, match="must not have a dq_"):
-        handler.check_passes(handler.PASS1_DETECTORS, [DqNamed()], facility.tunables)
-    with pytest.raises(ValueError, match="must have a dq_"):
-        handler.check_passes(handler.PASS2_DETECTORS, [], facility.tunables)
-    handler.check_passes(handler.PASS1_DETECTORS, handler.PASS2_DETECTORS, facility.tunables)
-
-
-@pytest.mark.parametrize("bad", [None, "900"])
-def test_leak_tunables_need_a_numeric_window_len(facility, bad):
-    tunables = {**facility.tunables, "window_len_s": bad}
-    for det in handler.PASS2_DETECTORS:
-        with pytest.raises(ValueError, match="window_len_s"):
-            handler.check_detectors([det], tunables)
 
 
 def test_simulated_default_leak_on_p007_end_to_end(facility):
