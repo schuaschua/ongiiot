@@ -84,6 +84,11 @@ context:
 - If the cancel at the end fails, the result is `FAIL: cancel: ...` with the `ops.inject cancel` command to run.
 - Tests: 8 new (6 functions, two parametrized); the notifier test asserts `link` in `notified` and that it is the emailed one.
 
+- Live check on `poc-dj` (2026-09-29, deploy run 36526379321 from `bdff339`): `ops.smoke --stage poc-dj` printed PASS in 203 s.
+  - A leak was injected at 05:33:17Z. Incident `01M3NTFN…` opened (at the 05:34:00Z window end) and was emailed at 05:36:34Z.
+  - The emailed link was read from the log, and `pipe-detail-dj` resolved with `pipe_id`, `area` and `evidence`. The injection was cancelled.
+  - `ops.reset` then closed the incident. A stray incident opened at 05:37:37Z, as the 4.2 hint predicts; findings stopped from 05:40:37Z, and a second reset left the stage quiet.
+
 ## Plan Change Log
 
 ## Review Triage Log
