@@ -3,7 +3,7 @@ title: 'OG-26: A source that stops mid-window is a source outage'
 type: 'bugfix'
 ticket: 'OG-26'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'oneshot'
 route_source: 'auto'
 review: 'quick'
@@ -29,6 +29,7 @@ context: []
 - Oneshot route: about 10 lines in `detect/handler.py` plus one test. The owner said to proceed without them (2026-09-29), so there was no human checkpoint.
 
 - Live on `poc-dj` (2026-09-29, deploy run 36547190180 from `06761ae`), with detection's schedule left **on**: the simulator was scaled to 0 at 09:12:34Z. The runs at 09:12:24–09:14:24 opened nothing. From 09:15:24 the runs logged `source outage` with `aliases_silent: 144` and opened nothing. The simulator was restored at 09:16:37Z, and the outage cleared at 09:19:24 with no incidents or emails. The same test before the fix opened and emailed 24 incidents.
+- Merged: PR #20, merge commit `9124d49`.
 
 ## Verification
 

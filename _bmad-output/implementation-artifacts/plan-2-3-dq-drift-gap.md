@@ -3,7 +3,7 @@ title: 'Story 2.3: Flag drifting and silent sensors'
 type: 'feature'
 ticket: 'OG-12'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -112,6 +112,7 @@ Both are calibrated on real simulator output, so normal data (including normal i
   - `dq_drift` (`per_min` 0.5) was injected on P-010 `temperature` and `dq_gap` on P-020 `flow_out` at 17:45:25Z.
   - At the 17:50:00Z window end (4.5 min of drift): P-010 `temperature_dq` = 0.0 / `dq_drift`; P-020 `flow_out_dq` = 0.0 / `dq_gap`; the other 142 sensors = 1.0.
   - Injections cancelled; simulator and detection switched off with the reviewed code (`f808300`).
+- Merged: PR #6, merge commit `e3b3fed`.
 
 ## Plan Change Log
 

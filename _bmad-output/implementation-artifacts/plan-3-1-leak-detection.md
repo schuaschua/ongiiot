@@ -3,7 +3,7 @@ title: 'Story 3.1: Detect leaks from mass balance and methane rise'
 type: 'feature'
 ticket: 'OG-14'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -117,6 +117,7 @@ context:
   - The 18:59:48 run (window end 18:58:00, 35 s of leak) gave `leak_mass_balance` P-007 0.69 and `leak_methane_rise` P-007 0.58, and no other pipe.
   - Consistent with the calibration (1.0 at 60 s of leak).
   - Injection cancelled; switched off with the reviewed code (`a96fddf`).
+- Merged: PR #8, merge commit `75dc22c`.
 
 ## Plan Change Log
 

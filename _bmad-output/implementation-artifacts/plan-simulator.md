@@ -1,9 +1,9 @@
 ---
 title: 'Simulator: live facility stream with fault and leak injection'
 type: 'feature'
-ticket: ''
+ticket: 'OG-6'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -64,13 +64,13 @@ context:
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `facility/control.py` -- sim_control item v1 dataclass, validation against the catalogue and model, `effective(items, now)` resolving windows and `supersedes`, and conversion to and from DynamoDB items; shared by `sim/` and `ops/`. -- AD-15 shape lives here.
-- [ ] `sim/physics.py` -- pure, seeded per-pipe model: `step(state, t, active) -> (state, samples)`. Steady state set by `service` inside the contracts; slow ambient temperature cycle; small correlated noise; mass-balanced flows; the injection effects in the matrix. -- CAP-1 and CAP-4 realism.
-- [ ] `sim/writer.py` -- raw writer: buffers samples; flushes with `BatchPutAssetPropertyValue` using at most 10 entries and 10 values per entry; refuses `derived/` and `attr/`; enforces strictly increasing per-alias timestamps; retries throttling. -- AD-1, AD-3, AD-17 code guard.
-- [ ] `sim/control.py` -- poller: scans `sim_control` every 5 s or less; logs first applies to `injection_log` with `attribute_not_exists(pk)`. -- AD-4, AD-15.
-- [ ] `sim/main.py` -- entry point `python -m sim.main`: load the model by `STAGE`; alias association check; 1 Hz wall-clock loop; flush every `FLUSH_S` (default 5); JSON logs; clean SIGTERM. The clock and AWS clients are injectable for tests. -- AD-1, AD-9.
-- [ ] `ops/inject.py` -- CLI `inject {leak,dq_flatline,dq_stuck,dq_drift,dq_gap} --pipe P --measurement M --minutes N [--rate-kg-s X] [--per-min X]` and `cancel <injection_id>`; validates through `facility/control.py`; writes only `sim_control`. -- AD-15.
-- [ ] `tests/test_control.py`, `tests/test_physics.py`, `tests/test_sim_writer.py`, `tests/test_sim_runtime.py`, `tests/test_inject_cli.py` -- one or more tests per matrix row, using fakes only. -- matrix coverage.
+- [x] `facility/control.py` -- sim_control item v1 dataclass, validation against the catalogue and model, `effective(items, now)` resolving windows and `supersedes`, and conversion to and from DynamoDB items; shared by `sim/` and `ops/`. -- AD-15 shape lives here.
+- [x] `sim/physics.py` -- pure, seeded per-pipe model: `step(state, t, active) -> (state, samples)`. Steady state set by `service` inside the contracts; slow ambient temperature cycle; small correlated noise; mass-balanced flows; the injection effects in the matrix. -- CAP-1 and CAP-4 realism.
+- [x] `sim/writer.py` -- raw writer: buffers samples; flushes with `BatchPutAssetPropertyValue` using at most 10 entries and 10 values per entry; refuses `derived/` and `attr/`; enforces strictly increasing per-alias timestamps; retries throttling. -- AD-1, AD-3, AD-17 code guard.
+- [x] `sim/control.py` -- poller: scans `sim_control` every 5 s or less; logs first applies to `injection_log` with `attribute_not_exists(pk)`. -- AD-4, AD-15.
+- [x] `sim/main.py` -- entry point `python -m sim.main`: load the model by `STAGE`; alias association check; 1 Hz wall-clock loop; flush every `FLUSH_S` (default 5); JSON logs; clean SIGTERM. The clock and AWS clients are injectable for tests. -- AD-1, AD-9.
+- [x] `ops/inject.py` -- CLI `inject {leak,dq_flatline,dq_stuck,dq_drift,dq_gap} --pipe P --measurement M --minutes N [--rate-kg-s X] [--per-min X]` and `cancel <injection_id>`; validates through `facility/control.py`; writes only `sim_control`. -- AD-15.
+- [x] `tests/test_control.py`, `tests/test_physics.py`, `tests/test_sim_writer.py`, `tests/test_sim_runtime.py`, `tests/test_inject_cli.py` -- one or more tests per matrix row, using fakes only. -- matrix coverage.
 
 **Acceptance Criteria:**
 - Given the shipped model, when the runtime runs 60 simulated seconds against a fake SiteWise, then all 144 raw aliases receive 60 GOOD values with strictly increasing timestamps and no out-of-contract values.
@@ -80,6 +80,10 @@ context:
 
 - Physics is pure, so tests drive simulated time without sleeping. Only `sim/main.py` touches the clock and AWS.
 - Default leak `rate_kg_s` = 10% of the pipe's mean flow. Methane rises toward a plateau of roughly 500 ppmv or more above a background of about 2 ppmv.
+
+## Implementation Notes
+
+- Merged: commit `ce617b8` on `main` (before pull requests were used).
 
 ## Verification
 

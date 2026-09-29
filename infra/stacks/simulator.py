@@ -73,7 +73,8 @@ class SimulatorStack(cdk.Stack):
             description=f"Simulator task ({stage}): egress only, no ingress",
             allow_all_outbound=True,
         )
-        # Container Insights emits RunningTaskCount (an explicit 0 with no task) for the simulator-down alarm (AD-15).
+        # Container Insights emits RunningTaskCount for the simulator-down alarm (AD-15). At desired count 0 it stops
+        # emitting (no explicit 0), so the alarm runs on missing data.
         self.cluster = ecs.Cluster(
             self,
             "Cluster",

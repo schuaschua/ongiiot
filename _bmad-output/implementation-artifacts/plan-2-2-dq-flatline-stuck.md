@@ -3,7 +3,7 @@ title: 'Story 2.2: Flag flatlined and stuck sensors'
 type: 'feature'
 ticket: 'OG-11'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -112,6 +112,7 @@ context:
   - `dq_flatline` was injected on P-003 `flow_in` and `dq_stuck` on P-015 `temperature` at 17:07:41Z.
   - At the 17:09 window end (80 s of fault in the window): P-003 `flow_in_dq` = 0.0 / `dq_flatline`; P-015 `temperature_dq` = 0.0 / `dq_stuck`; the other 142 sensors = 1.0 / "".
   - Injections cancelled; simulator and detection switched off with the reviewed code (`ab465c7`).
+- Merged: PR #5, merge commit `1e5a6ce`.
 
 ## Plan Change Log
 

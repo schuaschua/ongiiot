@@ -33,7 +33,7 @@ This document breaks the o&g iiot 4-day POC into epics and stories. The requirem
 - **FR7 (CAP-7):** Operators (consultants playing that role) receive an email when an incident opens. The email gives the pipe, the detectors, the confidence and a deep link.
 - **FR8 (AD-15):** Demo operators can inject leaks and sensor faults on demand, cancel them, and reset the demo.
 - **FR9 (AD-15):** A smoke test proves the whole chain works end to end: injection → incident → email → link.
-- **FR10 (AD-16 amended):** Every deploy runs through GitHub Actions. PRs are tested; merging to `main` deploys `poc` after approval; developer stages deploy on demand.
+- **FR10 (AD-16 amended):** Every deploy runs through GitHub Actions. PRs and pushes to `main` are tested; `poc` deploys only by manual dispatch from `main` (starting the run is the approval: no reviewer approval, because GitHub Team has no required reviewers on private repos), and the deploy does not run the tests (OG-23); developer stages deploy on demand.
 
 ### NonFunctional Requirements
 
@@ -60,7 +60,7 @@ This document breaks the o&g iiot 4-day POC into epics and stories. The requirem
 - IAM gives each component its own role, and write boundaries are enforced for raw, derived, incidents and control data (AD-17).
 - SiteWise is read through a single reader adapter, using ExecuteQuery with a BatchGet fallback (AD-18).
 - The simulator runs on ECS Fargate, in a public-subnet VPC with no NAT.
-- GitHub repo `schuaschua/ongiiot` (private). The GitHub `poc` environment requires an approval.
+- GitHub repo `schuaschua/ongiiot` (private). `poc` deploys only by manual dispatch from `main` (GitHub environment `poc`, branch rule `main`), with no reviewer approval (GitHub Team has no required reviewers on private repos) and no test gate in the deploy (OG-23).
 - Open questions to settle through spikes:
   - whether IAM can restrict SiteWise writes by alias prefix;
   - ExecuteQuery latency at full load;
@@ -69,7 +69,7 @@ This document breaks the o&g iiot 4-day POC into epics and stories. The requirem
 ### UX Design Requirements
 
 - **UX-DR1:** The `facility-overview` Grafana dashboard shows every pipe's `alert_state` and sensor data-quality scores at a glance.
-- **UX-DR2:** The `pipe-detail` dashboard (uid `pipe-detail`) has variables `pipe_id`, `area` and multi-value `evidence`, plus a constant `alias_root`. It shows raw trends by alias and highlights the evidence sensors (AD-8).
+- **UX-DR2:** The `pipe-detail` dashboard (uid `pipe-detail`) has variables `pipe_id`, `area` and multi-value `evidence`, plus a constant `alias_root`. It shows raw trends by alias and highlights the evidence sensors (AD-8; as built, a red "Evidence" row repeats one trend per evidence alias, because Grafana can't restyle existing panels by variable).
 
 ### FR Coverage Map
 
@@ -118,13 +118,15 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | Task: incident alert state on facility overview | OG-24 | Done (PR #22) |
 | Task: operator email + leak simulation | OG-25 | Done (PR #15) |
 | Bug: simulator stop mid-window emails every pipe | OG-26 | Done (PR #20) |
+| Task: close documentation gaps after the POC build | OG-27 | Done (PR #24) |
+| Task: alert the team when detection stops running | OG-28 | To Do |
 
 ## Epic List
 
 ### Epic 1: Live facility stream in AWS
 Engineers open Grafana and watch all 24 modelled pipes stream live from SiteWise, with every sensor mapped to its pipe and contract. Every deploy runs through GitHub Actions.
 **FRs covered:** FR1, FR2, FR10
-**Status:** partly built. The facility model and SiteWise stack are done (f58358e); the simulator runtime is done (ce617b8).
+**Status:** Done. All five stories are built and merged: 1.1 (f58358e), 1.2 (ce617b8), 1.3 to 1.5 (PRs #1 to #3), plus OG-23 (PR #14). `poc` deployed 2026-09-29.
 
 ### Epic 2: Trusted sensors: data-quality scoring
 The OT and instrumentation team sees a live trust score for every sensor, with the failing check named (flatline, stuck, drift, gap). This lays down the detection run that later epics extend.
@@ -190,6 +192,8 @@ So that deploys are repeatable, reviewed and safe for the shared demo stage.
 **And** a merge to `main` deploys `*-poc` only after approval in the GitHub `poc` environment
 **And** a manual dispatch with `poc-<initials>` deploys that stage without approval, and any other stage name is refused before any AWS call
 **And** the role trusts only `repo:schuaschua/ongiiot`, and no AWS secrets exist in GitHub.
+
+_As built:_ nothing deploys on merge. `poc` deploys only by manual dispatch of `deploy.yml` from `main` (environment `poc`, branch rule `main`); starting the run is the approval, because GitHub Team has no required reviewers on private repos. The deploy does not run the tests; `ci.yml` runs them on PRs and pushes to `main` (OG-23). The OIDC trust uses GitHub's immutable subject (`repo:schuaschua@83538399/ongiiot@1392670803`), scoped to the `poc` and `dev` environments, with a separate read-only diff role for `pull_request` (AD-16).
 
 ### Story 1.4: Run the simulator on ECS Fargate
 

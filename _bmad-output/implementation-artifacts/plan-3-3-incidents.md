@@ -3,7 +3,7 @@ title: 'Story 3.3: Group findings into one explainable incident per pipe'
 type: 'feature'
 ticket: 'OG-16'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -112,6 +112,7 @@ After the incident updates, each run writes `alert_state` and `alert_summary` fo
   - At 04:34: one OPEN incident on P-007 with `leak_mass_balance`, `leak_methane_rise` and `outlier_peer` (confidence 1.0); SiteWise `alert_state` = 3 (`integerValue`), and `alert_summary` JSON with `incident_id`, the detectors and the evidence. No other incidents; no startup gap incidents.
   - At 04:43, after the cancel and quiet runs: no OPEN slot, one CLOSED item (`closed_reason` `quiet`), `alert_state` 0, `alert_summary` `{}`.
   - Switched off with the reviewed code (`7f886f3`).
+- Merged: PR #10, merge commit `af7e7a6`.
 
 ## Plan Change Log
 

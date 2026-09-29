@@ -3,7 +3,7 @@ title: 'Story 3.4: Email operators with a one-click evidence link'
 type: 'feature'
 ticket: 'OG-17'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -104,6 +104,7 @@ context:
   - The earlier Story 3.3 incident stayed CLOSED; beyond the grace period, a new incident opened.
   - Delivery to an inbox and the link click were not verified (empty allowlist); owner to verify.
   - Leak cancelled; switched off with the reviewed code (`43bb0b2`).
+- Merged: PR #11, merge commit `cf72ec2`.
 
 ## Plan Change Log
 

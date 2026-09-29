@@ -3,7 +3,7 @@ title: 'Story 1.5: Watch the live stream in Grafana'
 type: 'feature'
 ticket: 'OG-9'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -128,6 +128,7 @@ context:
   - Folder, data source and dashboards are provisioned.
   - A Grafana query for P-007 `flow_in` returned 299 points in 5 min.
   - Simulator switched off afterwards (run 36446029226).
+- Merged: PR #3, merge commit `7472add`.
 
 ## Plan Change Log
 

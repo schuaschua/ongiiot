@@ -3,7 +3,7 @@ title: 'Story 4.4: Alert the team when the platform is unhealthy'
 type: 'feature'
 ticket: 'OG-21'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -84,6 +84,7 @@ context:
   - `simulator-down-poc-dj` went to ALARM at 07:31:07Z, **8.5 minutes later**, not about 4. It returned to OK at 07:32:15Z after the task was restored. The team topic published at 07:22 (OK), 07:31 (ALARM) and after the restore, so the CloudWatch → SNS path works under the topic policy.
   - **Why it was slow:** with desired count 0, Container Insights also stops emitting `RunningTaskCount` (the last datapoint was 07:22), so the alarm again ran on missing data. The explicit 0 the plan assumed was never emitted in this test. The realistic failure (desired count 1, task crashing) was not reproduced; in that case the service should keep reporting.
   - A single stopped task was replaced by ECS in under a minute, and the alarm stayed OK.
+- Merged: PR #19, merge commit `48e1828`.
 
 ## Plan Change Log
 

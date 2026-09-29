@@ -3,7 +3,7 @@ title: 'OG-24: Show incident alert state on the facility overview'
 type: 'feature'
 ticket: 'OG-24'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'oneshot'
 route_source: 'auto'
 review: ''
@@ -30,3 +30,4 @@ context: []
 - Tests: 176 pass. The first attempt used Grafana's `${__value.raw}` in the tile's text; the provisioning test rejects any leftover `__` placeholder (a guard for unfilled templates). The labels are now fixed text for 0–7 detectors (7 is every registered detector). Two provisioning count assertions went from 18 to 19 queries and from 3 to 4 links per pipe.
 - **Review skipped:** a dashboard-only change covered by its own prototype test and a live check.
 - Live on `poc-dj` (deploy run 36553261864): `facility-overview-dj` has 24 alert tiles reading `${alias_root}/<area>/<pipe>/derived/alert_state`. During the smoke incident, P-007 read 3 (red, "incident: 3 detectors") and P-008 read 0 (green). After the reset, `alert_state` was empty again. The rendered colours were not viewed in a browser.
+- Merged: PR #22, merge commit `efa67f0`.

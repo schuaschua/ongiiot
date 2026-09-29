@@ -61,3 +61,15 @@
 - source_plan: `_bmad-output/implementation-artifacts/plan-4-2-demo-reset.md`
   summary: Test the `ops/reset.py` path where the invoke succeeds but the `sim_control` scan or delete fails (exit 1, "incidents are already closed; run the reset again").
   evidence: Verification-gap review of Story 4.2. No test makes the table fail after a successful invoke, and `FakeTable.fail_scans` raises a plain Exception rather than a botocore `ClientError`, so the test needs a fake change first.
+- source_plan: `_bmad-output/implementation-artifacts/plan-4-1-inject-list.md`
+  summary: Use the `injection_log` `effective_end` in a reader (demo scoring of true injection windows); today the simulator writes it but nothing reads it.
+  evidence: Review triage IA-scoring (defer). `ops/inject.py list` computes its effective end from `sim_control`, not from `injection_log`; no other code reads the column.
+- source_plan: `_bmad-output/implementation-artifacts/plan-4-4-health-alarms.md`
+  summary: Owner action — add `"team_emails"` to `cdk.json`, deploy `poc` and confirm the subscription, so the health alarms reach someone.
+  evidence: Review triage EC-1 (owner action); the `cdk.json -- team_emails` task is unchecked and `cdk.json` holds only `operator_emails`. The alarms publish to `team-alarms-<stage>`, which has no subscriber.
+- source_plan: `_bmad-output/implementation-artifacts/plan-3-4-incident-email.md`
+  summary: Owner verification — confirm that an incident email reaches an inbox within 5 minutes (NFR8) and that its link opens the evidence in one click.
+  evidence: Implementation Notes ("Delivery to an inbox and the link click were not verified"); review triage IA-R1. Later runs record only SNS publishes and `notified_at`.
+- source_plan: `_bmad-output/implementation-artifacts/plan-4-5-demo-runbook.md`
+  summary: Record the fallback screen recording of a full rehearsal on `poc` and fill in its location in `docs/demo-runbook.md`.
+  evidence: Implementation Notes ("Not done here: the screen recording itself has to be made by a person"); the runbook's recording table still reads "_to be filled in_".
