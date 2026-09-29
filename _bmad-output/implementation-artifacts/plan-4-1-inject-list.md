@@ -3,7 +3,7 @@ title: 'Story 4.1: List running injections and record their true end'
 type: 'feature'
 ticket: 'OG-18'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -84,6 +84,7 @@ context:
 - IAM: `dynamodb:UpdateItem` on `injection_log` with `ForAllValues:StringEquals dynamodb:Attributes [pk, effective_end]` and `StringEqualsIfExists dynamodb:ReturnValues NONE`. Not yet verified against live IAM (no deploy in this session).
 
 - Live (read-only, 2026-09-29 05:44): `ops.inject list --recent-min 600` against `sim-control-poc-dj` listed the night's 9 test injections with effective ends at their cancel times and planned ends preserved. The simulator's `effective_end` write is not deployed (tests only).
+- Merged: PR #12, merge commit `6562d97`.
 
 ## Plan Change Log
 

@@ -3,7 +3,7 @@ title: 'Story 4.5: Prepare the demo runbook and fallback'
 type: 'chore'
 ticket: 'OG-22'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'oneshot'
 route_source: 'auto'
 review: 'none'
@@ -30,3 +30,4 @@ context: []
 - Docs only. Every read-only command in the runbook was run against `poc` on 2026-09-29: the subscriptions (the operator topic confirmed, the team topic empty), the task start time, both alarms `OK`, and no OPEN incidents. `ops.smoke` and `ops.reset` passed on `poc` the same day (smoke in 162 s).
 - **Review skipped:** docs-only, and every command was checked live.
 - **Not done here:** the screen recording itself has to be made by a person during a rehearsal. The runbook has a table for its location. The Jira issue notes this as a manual follow-up.
+- Merged: PR #21, merge commit `a80e4c0`.

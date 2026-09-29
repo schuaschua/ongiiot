@@ -3,7 +3,7 @@ title: 'Story 2.1: Refresh sensor trust every minute'
 type: 'feature'
 ticket: 'OG-10'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -136,6 +136,7 @@ Built in commit `5721071` on `feat/dq-refresh` (pushed); docs in `b7890c3` (comm
   - detection runs every minute; 144 `_dq = 1.0` and empty `_dq_fail` stored at `window_end` (SiteWise accepts the empty string);
   - in-Lambda full-load spike (129,600 samples): `batch_get` 6.4–6.8 s per run, `execute_query` 19.2–22.1 s. `batch_get` is the default.
   - Manual invokes are throttled by the reserved concurrency of 1, as designed, so timings came from the log lines of scheduled runs and config-switched runs.
+- Merged: PR #4, merge commit `cc5ceca`.
 
 ## Plan Change Log
 

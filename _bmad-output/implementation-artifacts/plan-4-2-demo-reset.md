@@ -3,7 +3,7 @@ title: 'Story 4.2: Reset the demo between rehearsals'
 type: 'feature'
 ticket: 'OG-19'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -90,6 +90,7 @@ context:
   - `ops.reset --yes` at 04:36:37Z took 1.5 s. It closed that incident (`C#…`, `closed_reason=reset`, `last_run` = the reset's run_id, `notified_at` kept) and deleted 22 `sim_control` items (the leak plus earlier test items). `ops.inject list` then showed "no injections", and `injection_log` still held its 12 rows.
   - **A stray incident appeared, as the owner's decision foresaw, but it lasted longer than the hint says.** The run at 04:37:37Z opened a new incident (`01M3NQ5E…`) and emailed it. Findings on P-007 (methane still ~65 ppmv above peers, plus outlier) continued through the 04:39:37Z run and were clean from 04:40:37Z, about 4 minutes after the reset.
   - A second `ops.reset --yes` at about 04:42Z closed it. The runs at 04:42:37Z and later opened nothing.
+- Merged: PR #17, merge commit `b04e63e`.
 
 ## Plan Change Log
 

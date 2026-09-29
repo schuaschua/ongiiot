@@ -3,7 +3,7 @@ title: 'Story 3.2: Flag a pipe that behaves differently from its peers'
 type: 'feature'
 ticket: 'OG-15'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -111,6 +111,7 @@ context:
   - The 19:48:54 run gave `outlier_peer` P-007 1.0 ("Unlike its 5 peers in fg-cs-10to15 (P-008, P-009, P-019, P-020, P-021) over the last 60 s: methane_ppm 159 vs peer median 2.047 (z +136.4); flow_ratio 0.9491 vs peer median 0.9998 (z -9.9)"), plus `leak_mass_balance` 0.637 and `leak_methane_rise` 0.523.
   - No other pipe flagged.
   - Injection cancelled; switched off with the reviewed code (`f24d86e`).
+- Merged: PR #9, merge commit `801214a`.
 
 ## Plan Change Log
 

@@ -103,17 +103,18 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
   - A pipe has at most one OPEN incident, enforced by DynamoDB: the slot `pk=<pipe_id>, sk=OPEN` is created with `attribute_not_exists(pk)`; `ConditionalCheckFailed` means update.
   - Every finding on a pipe, of any family, joins that pipe's incident: it upserts `detectors[<detector_id>]` (latest confidence and explanation, `quiet_runs=0`), unions `evidence_aliases`, widens `evidence_to`. `evidence_from` never moves after open. Incident `confidence` = max over detectors.
   - Quiet counting: a detector's `quiet_runs` increments only in runs where it is in `ran_ok`, the pipe is in `covered_pipes`, and it produced no finding. Otherwise it is unchanged.
+  - Source outage (amended 2026-09-29, OG-26): an alias is silent when it has a `dq_gap` finding (no GOOD sample in the window, or a trailing silence of at least `dq_gap.min_gap_s`). When at least 50% of the facility's raw aliases are silent in a run, `dq_gap` findings do not feed incidents and no detector counts a quiet run; other findings join as usual and `_dq` / `_dq_fail` are still written (`detect/handler.py`).
   - Close when every detector has `quiet_runs >= tunables.quiet_runs_to_close`: one `TransactWriteItems` deletes the slot and puts `sk=C#<incident_id>`, `status=CLOSED`.
   - Reopen: a finding within `tunables.reopen_grace_s` of the pipe's latest close restores that incident (same `incident_id`, `notified_at` kept, no new email). Incidents closed by reset never reopen.
   - Every write carries `last_run` and is conditional on `last_run < :run_id` (AD-12).
 
-### AD-7 — Email via a `notified_at` outbox, one email per incident
+### AD-7 — Email via a `notified_at` outbox, one email per incident (at least once)
 
 - **Binds:** CAP-7, demo-only constraint
 - **Prevents:** lost emails after partial failure, duplicate senders, emails to client operators
 - **Rule:**
   - `detect/adapters/notifier.py` runs in-process at the end of each run, after incident writes. No DynamoDB Stream exists on `incidents`.
-  - For every OPEN incident without `notified_at`: publish to the stage's operator topic, then `SET notified_at` with `attribute_not_exists(notified_at)`. A failed publish is logged and retried by the next run.
+  - For every OPEN incident without `notified_at`: publish to the stage's operator topic, then `SET notified_at` with `attribute_not_exists(notified_at)`. A failed publish is logged and retried by the next run. Delivery is at least once: an error after a successful publish but before `notified_at` is set can send the same email again on the next run; an email is never silently lost.
   - Detectors joining an already-notified incident send no new email.
   - Subscriptions come only from the CDK context allowlist `operator_emails` (consultants). The topic policy denies `Subscribe` to every principal except the deploy role.
   - Message format is fixed (Shared Shapes, Email v1).
@@ -124,7 +125,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Prevents:** links that don't resolve, lose the contributing sensors, or drift from the dashboard
 - **Rule:**
   - The link is built only by `detect/adapters/deeplink.py::build_link(incident, grafana_url, dashboard_uid)` using the literal Deep link v1 template (Shared Shapes).
-  - `dashboards/pipe-detail.json` declares uid `pipe-detail`, textbox variables `pipe_id` (value `P-xxx`, not an asset ID) and `area`, a constant `alias_root`, and a multi-value `evidence` variable that highlights panels. Panels query raw values by alias, not aggregates.
+  - `dashboards/pipe-detail.json` declares uid `pipe-detail`, textbox variables `pipe_id` (value `P-xxx`, not an asset ID) and `area`, a constant `alias_root`, and a multi-value `evidence` variable. Evidence is highlighted in an "Evidence" row at the top of the dashboard: one red, thick raw trend repeated per selected alias (amended 2026-09-29, Story 1.5; Grafana cannot restyle the six fixed trend panels by variable, so they are not restyled). Panels query raw values by alias, not aggregates.
   - `tests/test_deeplink_contract.py` loads the dashboard JSON and asserts the uid and variable names.
 
 ### AD-9 — Time is UTC; the simulator runs in real time; windows are aligned
@@ -169,7 +170,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Prevents:** type mismatches between writer and dashboard, inverted or ad-hoc scores, alert detail invisible to Grafana
 - **Rule:**
   - Derived properties are exactly the Derived properties v1 table, declared in the asset model generated from `facility.yaml`.
-  - All are written every run for every pipe and sensor, at `window_end`, by `detect/adapters/derived_writer.py` only.
+  - All are written every run for every pipe and sensor, at `window_end`, by `detect/adapters/derived_writer.py` only. Exception: a pipe whose incident writes the replay guard skipped (AD-12) gets no `alert_state` / `alert_summary` in that run, so a replay never overwrites the history at that `window_end`.
   - `detect/core/dq_score.py::score(findings_for_alias) -> (dq, failing)` is the sole owner: `dq = 1 − max(confidence of dq_* findings naming the alias)`, `1.0` if none; `failing` = sorted `dq_*` IDs. An alias with no samples in the window scores `0.0` with `dq_gap`.
   - `alert_state` and `alert_summary` are written after incident updates in the same run.
 
@@ -193,10 +194,11 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
   - Warm-up: the `poc` simulator runs at least 30 min (≥ 2 × `window_len_s`) before the demo. Detectors need no more history than that.
   - Latency target: injection to email ≤ 5 min. Leak magnitudes in the catalogue are sized so `leak_mass_balance` fires within 2 runs.
   - Injection: only `ops/inject.py` writes `sim_control` (sim_control item v1). Items are immutable; cancel = new item with `supersedes`. The simulator polls every ≤ 5 s, read-only, and appends to `injection_log` on first apply.
-  - Reset (`ops/reset.py`): invoke detection with `{"action": "reset"}` so `incidents.py` closes all OPEN incidents (`closed_reason=reset`), then delete all `sim_control` items. Raw data and `injection_log` are untouched; the demo uses the time range after reset.
+  - Reset (`ops/reset.py`): invoke detection with `{"action": "reset"}` so `incidents.py` closes all OPEN incidents (`closed_reason=reset`), then delete all `sim_control` items. Raw data and `injection_log` are untouched; the demo uses the time range after reset. A run within about 5 min of the reset can still see the fault in its trailing window and open a stray incident (and email it): wait about 5 min, then reset again if one appeared (`ops/reset.py` prints this hint).
   - Smoke (`ops/smoke.py`): inject a leak on a test pipe, wait for an OPEN incident with `notified_at`, assert the link resolves to `pipe-detail`.
   - Pre-demo checklist: every SNS subscription confirmed, warm-up elapsed, smoke passed, reset run.
-  - Health: CloudWatch alarms (detection Lambda errors ≥ 1 in 5 min, simulator running tasks < 1) go to the separate `team-alarms-<stage>` topic, never the operator topic.
+  - Health: two CloudWatch alarms send ALARM and OK to the separate `team-alarms-<stage>` topic, never the operator topic (Story 4.4): `detection-errors-<stage>` (Lambda `Errors` Sum ≥ 1 over 5 min, missing data not breaching) and `simulator-down-<stage>` (Container Insights `RunningTaskCount` Minimum < 1 for 3 × 60 s on the `simulator-<stage>` cluster and service, missing data breaching). With `-c simulator=off` the simulator alarm's actions are disabled. The topic policy lets CloudWatch publish (this account's alarms only), because the explicit deny-Subscribe policy replaces SNS's default one. Subscribers come only from the CDK context `team_emails`.
+  - Live finding (2026-09-29, `poc-dj`): at desired count 0 Container Insights stops emitting `RunningTaskCount`, so the alarm runs on missing data; it reached ALARM 8.5 min after the stop, not about 4. A stopped schedule (detection no longer invoked) raises no alarm (OG-28).
   - Fallback: a screen recording of a full rehearsal run.
 
 ### AD-16 — Environments: shared `poc` stage plus per-developer stages
@@ -206,7 +208,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Rule:**
   - `cdk deploy -c stage=<stage>`. Stages: `poc` (integration and demo) and `poc-<initials>` (one per developer). Every resource name is suffixed with the stage.
   - `alias_root` is `/lng1` for `poc` and `/<stage>/lng1` otherwise. `facility/model.py` applies it.
-  - One Grafana workspace, shared by all stages in `SharedGrafanaStack` (fixed name, like `SharedNetworkStack`; amended 2026-09-28, was "owned by the `poc` stage"). Any stage deploy creates or reuses it; deleting a stage leaves it in place. Each stage (`GrafanaStack-<stage>`) provisions its own folder `ongiiot-<stage>`, data source `sitewise-<stage>` and dashboards with uid `pipe-detail` / `facility-overview` (poc) or `pipe-detail-<initials>` / `facility-overview-<initials>`. `DASHBOARD_UID`, `GRAFANA_URL` and `STAGE` reach the Lambda as CDK-set env vars (stack outputs of `GrafanaStack-<stage>`).
+  - One Grafana workspace, shared by all stages in `SharedGrafanaStack` (fixed name, like `SharedNetworkStack`; amended 2026-09-28, was "owned by the `poc` stage"). Any stage deploy creates or reuses it; deleting a stage leaves it in place. Each stage (`GrafanaStack-<stage>`) provisions its own folder `ongiiot-<stage>`, data source `sitewise-<stage>` and dashboards with uid `pipe-detail` / `facility-overview` (poc) or `pipe-detail-<initials>` / `facility-overview-<initials>`. `DASHBOARD_UID`, `GRAFANA_URL` and `STAGE` reach the Lambda as CDK-set env vars: `GRAFANA_URL` is a cross-stack reference to `SharedGrafanaStack`'s workspace URL, and `DASHBOARD_UID` is derived from the stage in code (`pipe-detail` or `pipe-detail-<initials>`, the same derivation as `grafana_provision`).
   - Provisioning runs **during** `cdk deploy` (amended 2026-09-28, was "after"): a custom resource (`infra/stacks/grafana_provision.py`, handler `infra/lambdas/grafana_provision/`) mints a service-account token of at most 15 minutes, pins the SiteWise plugin 2.6.3 (best effort; the running version is a stack output), upserts data source and dashboards through the Grafana HTTP API, and deletes the token. The CI deploy role and its trust are unchanged. Grafana access is assigned in code (`ADMIN_USER_IDS`, `grafana:UpdatePermissions`).
   - Deploys run only in GitHub Actions (`.github/workflows/deploy.yml`, runbook `docs/ci-cd.md`) through OIDC. GitHub holds no AWS keys.
   - Trust is scoped by GitHub environment, with exact `sub` matches. `ongiiot-github-deploy` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:environment:poc` and `…:environment:dev`, and can only assume the CDK bootstrap roles. `ongiiot-github-diff` is trusted only for `repo:schuaschua@83538399/ongiiot@1392670803:pull_request`, and can only assume the read-only CDK lookup role.
@@ -224,9 +226,12 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 
 | Role | Allowed | Denied explicitly |
 | --- | --- | --- |
-| Simulator task | `BatchPutAssetPropertyValue` and `DescribeTimeSeries` on the stage's pipe assets; `sim_control` read (`Scan`); `injection_log` write (`PutItem`) | `derived/*` aliases: not an IAM deny (IAM cannot scope by alias); the `sim/writer.py` code guard refuses them |
-| Detection Lambda | SiteWise read (`ExecuteQuery`, `BatchGet*`, `Describe*`, `List*`); `BatchPutAssetPropertyValue` on `derived/*` only; `incidents` read/write; publish to operator topic | raw aliases, `sim_control`, `injection_log` |
-| Ops (developer) | `sim_control` read/write/delete; invoke detection Lambda; `injection_log` read | SiteWise writes |
+| Simulator task | `BatchPutAssetPropertyValue` and `DescribeTimeSeries` on the stage's pipe assets plus `time-series/*`; `sim_control` read (`Scan`); `injection_log` write (`PutItem`), plus `UpdateItem` limited by `dynamodb:Attributes` to `pk` and `effective_end` (Story 4.1) | `derived/*` aliases: not an IAM deny (IAM cannot scope by alias); the `sim/writer.py` code guard refuses them |
+| Seed Lambda (attribute values) | `BatchPutAssetPropertyValue` on the stage's pipe assets plus `time-series/*` | everything else |
+| Detection Lambda | SiteWise read (`ExecuteQuery`, `BatchGetAssetPropertyValueHistory`, `Describe*`, `List*`); `BatchPutAssetPropertyValue` on the stage's pipe assets plus `time-series/*` (the `derived_writer.py` code guard limits it to this stage's `derived/` aliases); on `incidents` exactly `Query`, `PutItem`, `DeleteItem`, `TransactWriteItems`, plus `UpdateItem` limited by `dynamodb:Attributes` to `pk`, `sk`, `incident_id`, `notified_at` (Story 3.4); `sns:Publish` on the operator topic; its own log group | raw aliases (code guard, not IAM), `sim_control`, `injection_log` (no grant) |
+| Detection scheduler | `lambda:InvokeFunction` on the detection Lambda | everything else |
+| Ops (developer credentials; no role in code) | `sim_control` `Scan`, `GetItem`, `PutItem`, `BatchWriteItem` (inject, list, cancel, reset, smoke); `lambda:InvokeFunction` on `detection-<stage>` (reset); `incidents` `GetItem`, `logs:FilterLogEvents` on `/aws/lambda/detection-<stage>`, `cloudformation:DescribeStacks` on `SharedGrafanaStack` and `GrafanaStack-<stage>`, and the Grafana service-account token actions (smoke; `docs/ci-cd.md` section 5) | SiteWise writes |
+| Grafana provisioning Lambda | the Grafana service-account actions on the shared workspace only | everything else |
 | Grafana | `AWSIoTSiteWiseReadOnlyAccess` | everything else |
 
   - Finding (2026-09-28, AWS service authorization reference): IAM cannot scope `BatchPutAssetPropertyValue` by alias. No SiteWise action supports the `iotsitewise:propertyAlias` condition key, so the "Denied explicitly" `derived/*` and raw-alias columns cannot be written as IAM denies. IAM scopes writes to the stage's pipe asset ARNs; the raw/derived boundary is the code guard: the raw writer in `sim/` (`sim/writer.py`) rejects `derived/` and `attr/` aliases and `derived_writer.py` rejects all others, each with a unit test.
@@ -237,7 +242,7 @@ Arrows point from importer to imported. `detect/core/` imports only its own `mod
 - **Prevents:** the read path leaking into detectors or changing the `Window` type
 - **Rule:**
   - `reader.py` returns `FacilityWindow` with raw samples and every expected alias present (empty list if no data).
-  - Primary: `ExecuteQuery` filtered on `event_timestamp`. Fallback: `BatchGetAssetPropertyValueHistory` (16 entries per request, parallel). A day-1 spike at full load (50 pipes × 6 × 900 s) picks one; the choice stays inside the adapter.
+  - Primary: `ExecuteQuery` filtered on `event_timestamp`. Fallback: `BatchGetAssetPropertyValueHistory` (16 entries per request, parallel). A day-1 spike at full load (24 pipes × 6 × 900 s) picks one; the choice stays inside the adapter.
   - Spike result (2026-09-29, Story 2.1): **`batch_get` is the default** (`DEFAULT_STRATEGY` in `detect/adapters/reader.py`); `execute_query` stays selectable. Measured from a laptop in `ap-southeast-1` against `poc-dj` history, all 144 aliases, one 15-minute window holding 70,992 samples (about 490 s of 1 Hz data): `batch_get` 0.8–1.3 s (9 requests in parallel); `execute_query` 14.6–14.9 s (15 pages of at most about 5,800 rows, strictly sequential through `nextToken`), which extrapolates to about 27 s at a full 129,600-sample window, over half the 50 s timeout. Both returned identical windows. A `property_alias IN (…)` list of 144 aliases returned samples for only a subset of them, so `execute_query` filters by the aliases' common prefix (`LIKE`) and drops other aliases in the adapter. **In-Lambda at full load** (`poc-dj`, 2026-09-29 00:38 +08, 129,600 samples, 1024 MB): a whole run (read + score + 288 writes) takes 6.4–6.8 s with `batch_get` and 19.2–22.1 s with `execute_query`. `batch_get` stays the default, with wide margin under the 50 s timeout.
   - Asset metadata is cached per cold start.
 
@@ -369,7 +374,7 @@ Subject `[POC] Pipe <pipe_id> incident <incident_id>`. Body lines in order: `POC
 | IDs | `incident_id`, `injection_id`: ULID |
 | Confidence | float 0–1, stored unrounded, shown to 2 dp |
 | Logging | JSON lines to CloudWatch with `stage`, `run_id`, `config_hash`, and `pipe_id`, `detector_id`, `incident_id` when known; one summary line per run listing detector versions and `ran_ok` |
-| Config | Resource names, `GRAFANA_URL`, `DASHBOARD_UID`, `STAGE` via CDK env vars. Tunables only in `facility.yaml` (AD-2). Operator emails in CDK context `operator_emails` |
+| Config | Resource names, `GRAFANA_URL`, `DASHBOARD_UID`, `STAGE` via CDK env vars. Tunables only in `facility.yaml` (AD-2). Operator emails in CDK context `operator_emails`; team alarm emails in CDK context `team_emails` (same parser, AD-15) |
 | Errors | Detector failure: logged, skipped, excluded from `ran_ok`. Adapter failure: the invocation fails; the next scheduled run retries (AD-12) |
 | Python deps | `uv` project; `uv.lock` pins all; Lambda bundle and simulator image install from it |
 
@@ -458,7 +463,7 @@ ops/                       # inject.py, reset.py, smoke.py (AD-15)
 infra/                     # CDK app per stage; shared network and Grafana stacks; Grafana provisioning custom resource (AD-10, AD-16, AD-17)
 dashboards/                # facility-overview.json, pipe-detail.json (AD-8)
 tests/                     # detector units, test_layers, test_deeplink_contract, alias-guard tests
-.github/workflows/         # ci.yml (PR gate), deploy.yml (poc on main, dev stages by dispatch) (AD-16)
+.github/workflows/         # ci.yml (PR gate), deploy.yml (manual dispatch only: poc from main, dev stages from any branch) (AD-16)
 docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 ```
 
@@ -493,7 +498,7 @@ docs/ci-cd.md              # OIDC and GitHub environment runbook (AD-16)
 | --- | --- |
 | ~~Can SiteWise IAM scope `BatchPutAssetPropertyValue` by alias prefix (AD-17)?~~ Resolved 2026-09-28: no; grants are scoped to pipe asset ARNs and the code guard is the boundary | AWS service authorization reference |
 | ~~ExecuteQuery latency at full load within the 50 s timeout (AD-18)?~~ **Resolved 2026-09-29:** ExecuteQuery 19–22 s and BatchGet 6.4–6.8 s per full run in the Lambda; `batch_get` is the default. | Done |
-| ~~Can IAM Identity Center be enabled in the POC account for Grafana?~~ **Resolved 2026-09-28:** yes, the organization instance `ssoins-7223813109c6d7dd` (`us-east-1`) is enabled; the workspace (`ap-southeast-1`) uses `AWS_SSO`. Cross-region sign-in is confirmed on the first live `poc-dj` deploy; if it fails, fall back to self-hosted Grafana with the same dashboards and record it here | First `poc-dj` deploy of Story 1.5 |
+| ~~Can IAM Identity Center be enabled in the POC account for Grafana?~~ **Resolved 2026-09-28:** yes, the organization instance `ssoins-7223813109c6d7dd` (`us-east-1`) is enabled; the workspace (`ap-southeast-1`) uses `AWS_SSO`. Cross-region sign-in confirmed on the first live `poc-dj` deploy (2026-09-28, `plan-1-5-grafana.md` Implementation Notes); no fallback needed | Done |
 | Does the client stream reach AWS via SiteWise Edge or IoT Core/Kinesis (AD-1)? | Client technical contact before next phase |
 | ~~Does 1 Hz per measurement hold on Fargate, and do alias writes succeed with grants on pipe asset ARNs?~~ **Resolved 2026-09-28 (first `poc-dj` deploy):** 1 Hz holds (60 GOOD values per 60 s, no gaps; all 144 aliases fresh). Asset ARNs alone are not enough: alias-addressed writes are authorised against the time series, so the seed Lambda and simulator task also hold `time-series/*` (AD-17). | Done |
-| Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Before the demo; today anyone with write access can dispatch `poc` from `main` |
+| Is a second-person approval for `poc` needed (GitHub Enterprise, or a separate gate)? (AD-16) | Owner decision pending; today anyone with write access can dispatch `poc` from `main` |

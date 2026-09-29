@@ -1,9 +1,9 @@
 ---
 title: 'CI/CD: GitHub Actions with AWS OIDC'
 type: 'chore'
-ticket: ''
+ticket: 'OG-7'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -100,6 +100,7 @@ context:
 
 - Pass 2 implementation (2026-09-28): rebuilt from `.work/diff-cicd-pass1.patch` plus the amendments. Verified: `uv run pytest -q` 222 passed; synth with `-c oidc=true` gives `GitHubOidcStack` + `SiteWiseAssetsStack-poc`, without it only the stage stack; actionlint 1.7.12 and `rhysd/actionlint:latest` report no errors. Mutation checks: `fullmatch`→`match` fails the `poc-dj\n` case, and swapping the dispatch environment fails `test_resolve_outputs`.
 - Review pass 1: code reverted after two intent_gap findings (see Review Triage Log); the pass-1 diff is kept at `.work/diff-cicd-pass1.patch` for reuse.
+- Merged: PR #1, merge commit `ee4936f`.
 
 ## Plan Change Log
 

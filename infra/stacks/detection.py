@@ -17,8 +17,8 @@
   The simulator role gets nothing on it (AD-17). ``UpdateItem`` (the ``notified_at`` outbox marker, Story 3.4) is a separate statement whose
   ``dynamodb:Attributes`` condition allows only ``pk``, ``sk``, ``incident_id`` and ``notified_at``.
 - ``operators-<stage>`` SNS topic (Story 3.4; AD-7): one email subscription per address in the CDK context
-  ``operator_emails`` (comma-separated, empty by default, so no subscription). The topic policy denies
-  ``sns:Subscribe`` to every principal except the CDK CloudFormation execution role (the deploy path). The
+  ``operator_emails`` (comma-separated; absent or empty means no subscription; ``cdk.json`` sets it, OG-25).
+  The topic policy denies ``sns:Subscribe`` to every principal except the CDK CloudFormation execution role (the deploy path). The
   function role gets ``sns:Publish`` on this topic only; ``OPERATOR_TOPIC_ARN`` reaches the Lambda.
 - ``GRAFANA_URL`` (``SharedGrafanaStack``'s workspace URL, a cross-stack reference) and ``DASHBOARD_UID``
   (``pipe-detail`` for ``poc``, ``pipe-detail-<initials>`` otherwise, the same derivation as
@@ -311,8 +311,8 @@ class DetectionStack(cdk.Stack):
             datapoints_to_alarm=1,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
-        # Container Insights reports an explicit 0 with no task; missing data also breaches. Three minutes ride over
-        # a stop-first redeploy.
+        # Container Insights stops emitting at desired count 0 (no explicit 0; live check: ALARM after 8.5 min), so
+        # missing data breaches. Three minutes ride over a stop-first redeploy.
         simulator = f"simulator-{stage}"
         self.simulator_alarm = cloudwatch.Alarm(
             self,

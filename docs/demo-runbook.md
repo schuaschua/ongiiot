@@ -4,6 +4,8 @@ For the day-4 demo on the shared `poc` stage (Story 4.5, AD-15). Every command b
 
 The demo shows one chain: **inject a leak → an incident opens → the operator email arrives → its link opens the evidence in Grafana**. On `poc`, the email arrived 2–3 minutes after the injection (smoke test on 2026-09-29: 162 s).
 
+> **Teardown, 2026-09-29.** All stacks except Grafana were torn down. Before a rehearsal or the demo, redeploy `poc` (the first checklist row) and wait 30+ minutes of warm-up. On that first deploy SNS sends a new "Subscription Confirmation" email to every address: confirm it again (see [Subscriptions](#subscriptions)). If the deploy fails because a retained `poc` table already exists, see `docs/ci-cd.md` section 5.
+
 ## Checklist
 
 Tick every line on the day. The demo is ready only when all are ticked.
@@ -19,7 +21,8 @@ Tick every line on the day. The demo is ready only when all are ticked.
 | T−30 min | Smoke test passed | `uv run python -m ops.smoke --stage poc --table sim-control-poc` | last line `PASS …` within 5 minutes; one email arrives |
 | T−25 min | Reset run | `uv run python -m ops.reset --stage poc --table sim-control-poc --yes` | `closed 1 incidents, deleted N injections` |
 | T−20 min | No stray incident after the reset | wait 5 minutes, then [Open incidents](#open-incidents) | no OPEN incident; if one appeared, run the reset again and wait another 5 minutes |
-| T−10 min | Health alarms OK | `aws cloudwatch describe-alarms --alarm-names detection-errors-poc simulator-down-poc --query 'MetricAlarms[].[AlarmName,StateValue]' --output text` | both `OK` |
+| T−10 min | Health alarms OK | `aws cloudwatch describe-alarms --alarm-names detection-errors-poc simulator-down-poc --query 'MetricAlarms[].[AlarmName,StateValue]' --output text` | both `OK`. The alarms reach nobody until `team_emails` is set in `cdk.json` (it is not yet), so this check is the only way to see them |
+| T−8 min | Rehearsal emails cleared | in the operator inbox, archive or delete every `[POC] Pipe … incident …` email (the smoke test and any stray incident each sent one) | no `[POC]` incident email left, so step 4 of the script opens the demo's email |
 | T−5 min | Screens ready | Grafana `facility-overview` open and signed in; mail client open on the operator inbox; this runbook and the fallback recording open | all visible |
 
 ## Commands

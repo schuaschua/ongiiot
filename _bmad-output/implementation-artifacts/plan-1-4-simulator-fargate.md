@@ -3,7 +3,7 @@ title: 'Story 1.4: Run the simulator on ECS Fargate'
 type: 'feature'
 ticket: 'OG-8'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -108,6 +108,7 @@ context:
   - `a75f215`: alias writes need `time-series/*`, and the seed error overflowed CloudFormation's 4 KB response.
   - orphaned seed log groups after the rollback: deleted by hand, runbook note added.
   - `2fd6ac5`: on a fresh stage the simulator refused to start, because series do not exist before the first write. It now verifies after the first write (human-approved change to Story 1.2 code).
+- Merged: PR #2, merge commit `fcf5a1c`.
 
 ## Plan Change Log
 

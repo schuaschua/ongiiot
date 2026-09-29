@@ -3,7 +3,7 @@ title: 'Story 2.4: See trust scores on the facility overview'
 type: 'feature'
 ticket: 'OG-13'
 created: '2026-09-29'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -85,6 +85,7 @@ context:
   - The provisioned `facility-overview-dj` has 75 panels, including the P-003 raw, trust and failing tiles.
   - The panel queries, run through the Grafana API with `alias_root` substituted, return fields `<m>_dq` / `<m>_dq_fail`: `flow_in_dq` = 0 (below the provisioned threshold 0.5, so red) with `flow_in_dq_fail` = `dq_flatline`; the other five are 1 and ''.
   - Visual rendering not checked (it needs a browser).
+- Merged: PR #7, merge commit `8ade86c`.
 
 ## Plan Change Log
 

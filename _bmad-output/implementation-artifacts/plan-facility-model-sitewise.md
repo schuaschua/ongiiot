@@ -1,9 +1,9 @@
 ---
 title: 'Facility model v1 and SiteWise asset stack'
 type: 'feature'
-ticket: ''
+ticket: 'OG-5'
 created: '2026-09-28'
-status: 'built'
+status: 'done'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -82,6 +82,10 @@ context:
 
 - Derived values are SiteWise *measurements*, so that `BatchPut` can write them; their types follow the v1 table.
 - Attributes carry model defaults from `contracts`. The custom resource writes per-pipe values, including overrides.
+
+## Implementation Notes
+
+- Merged: commit `f58358e` on `main` (before pull requests were used).
 
 ## Verification
 
