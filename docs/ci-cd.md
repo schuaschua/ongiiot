@@ -109,7 +109,7 @@ uv run python -m ops.reset --stage poc-dj --table sim-control-poc-dj --yes      
 ```
 
 - The next scheduled run writes `alert_state = 0` and `alert_summary = {}`. A reset-closed incident never reopens: a later finding on that pipe opens a new incident with its own email.
-- **Stray incidents.** A run within about 2 minutes of the reset can still see the fault in its trailing window and open a new incident. Wait about 2 minutes and run the reset again if one appears (`ops.reset` prints this hint).
+- **Stray incidents.** A run within about 5 minutes of the reset can still see the fault in its trailing window and open a new incident (and email it). On `poc-dj` a leak's methane stayed above its peers for about 4 minutes after the reset. Wait about 5 minutes and run the reset again if an incident appears (`ops.reset` prints this hint).
 - **Failures.** If the invoke fails (for example the function is throttled because a scheduled run holds its one slot, or it returns a Lambda error), the script exits 1 and deletes nothing: run it again. A pipe whose close lost a race twice is listed as a warning and stays open; run it again. Running it twice is safe: pipes with nothing OPEN are skipped.
 - The caller needs `lambda:InvokeFunction` on `detection-<stage>` and `dynamodb:Scan` and `dynamodb:BatchWriteItem` on `sim-control-<stage>` (the Ops role in AD-17).
 

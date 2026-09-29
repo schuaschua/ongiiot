@@ -34,7 +34,7 @@ context:
 - `ops/reset.py` deletes `sim_control` items with a paginated scan and batched deletes. It never touches raw data or `injection_log`. The simulator re-scans every ≤ 5 s and drops vanished items, which stops their effect.
 - `ops/reset.py` reads `STAGE` (default `poc`), `SIM_CONTROL_TABLE` and the function name `detection-<stage>`, like `ops/inject.py`. It prints what it closed and deleted, and it exits non-zero if the invoke fails or returns a Lambda error; in that case it deletes nothing.
 - It asks for confirmation unless `--yes` is given.
-- **Decision (owner, 2026-09-29), stray incidents after reset:** keep the AD-15 order (close incidents, then delete injections). A run within about 2 minutes of the reset may still see the fault in its trailing window and open a new incident. `ops/reset.py` prints this hint, and the docs say to wait about 2 minutes and rerun the reset if an incident appears. No hold-off marker.
+- **Decision (owner, 2026-09-29), stray incidents after reset:** keep the AD-15 order (close incidents, then delete injections). A run within about 5 minutes of the reset may still see the fault in its trailing window and open a new incident. `ops/reset.py` prints this hint, and the docs say to wait about 5 minutes and rerun the reset if an incident appears. No hold-off marker.
 
 **Never:**
 - No `Scan` on `incidents` and no new IAM for the Lambda (it already holds `Query`, `PutItem`, `DeleteItem` and `TransactWriteItems`).
@@ -85,7 +85,15 @@ context:
 - Docs: `docs/ci-cd.md` section 5 "Reset between rehearsals"; the section 7 "no reset yet" limit now points to it.
 - Not done here: the live check on `poc-dj` (needs a deploy of `DetectionStack-poc-dj`).
 
+- Live check on `poc-dj` (2026-09-29, deploy run 36521760457 from `ab52163`):
+  - A leak was injected on P-007 at 04:32:28Z. Incident `01M3NPZZ…` opened and was emailed at 04:35:34Z.
+  - `ops.reset --yes` at 04:36:37Z took 1.5 s. It closed that incident (`C#…`, `closed_reason=reset`, `last_run` = the reset's run_id, `notified_at` kept) and deleted 22 `sim_control` items (the leak plus earlier test items). `ops.inject list` then showed "no injections", and `injection_log` still held its 12 rows.
+  - **A stray incident appeared, as the owner's decision foresaw, but it lasted longer than the hint says.** The run at 04:37:37Z opened a new incident (`01M3NQ5E…`) and emailed it. Findings on P-007 (methane still ~65 ppmv above peers, plus outlier) continued through the 04:39:37Z run and were clean from 04:40:37Z, about 4 minutes after the reset.
+  - A second `ops.reset --yes` at about 04:42Z closed it. The runs at 04:42:37Z and later opened nothing.
+
 ## Plan Change Log
+
+- 2026-09-29, after the live check (owner): the stray-incident hint changes from "about 2 minutes" to "about 5 minutes" in `ops/reset.py` and `docs/ci-cd.md`. On `poc-dj` a leak's methane stayed above its peers for about 4 minutes after the reset. The owner amended the frozen decision; the order and the no-marker choice are unchanged.
 
 ## Review Triage Log
 

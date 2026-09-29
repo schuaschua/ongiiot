@@ -50,7 +50,7 @@ def test_reset_closes_incidents_then_deletes_every_injection(capsys):
     out = captured.out
     assert "P-012" in captured.err and "warning" in captured.err
     assert "01I7" in out and "01I12" in out and "closed 2 incidents, deleted 2 injections" in out
-    assert "about 2 minutes" in out
+    assert "about 5 minutes" in out
 
 
 def test_nothing_to_reset(capsys):

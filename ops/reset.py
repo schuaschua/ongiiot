@@ -8,8 +8,8 @@
 Raw SiteWise data and ``injection_log`` are never touched. If the invoke fails or returns a Lambda error, the
 script exits 1 and deletes nothing.
 
-A detection run within about 2 minutes of the reset may still see the fault in its trailing window and open a
-new incident: wait about 2 minutes and run the reset again if one appears.
+A detection run within about 5 minutes of the reset may still see the fault in its trailing window and open a
+new incident: wait about 5 minutes and run the reset again if one appears.
 
 Environment: ``STAGE`` (default ``poc``) and ``SIM_CONTROL_TABLE`` (required unless ``--table`` is given).
 
@@ -32,8 +32,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from ops.inject import _scan
 
 STRAY_HINT = (
-    "note: a detection run within about 2 minutes may still see the fault in its window and open a new "
-    "incident; if one appears, wait about 2 minutes and run the reset again."
+    "note: a detection run within about 5 minutes may still see the fault in its window and open a new "
+    "incident; if one appears, wait about 5 minutes and run the reset again."
 )
 
 
