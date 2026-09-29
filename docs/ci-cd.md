@@ -421,9 +421,9 @@ Two CloudWatch alarms per stage (AD-15, Story 4.4) tell the team when the platfo
 | Alarm | Metric | Fires when | Means |
 |-------|--------|------------|-------|
 | `detection-errors-<stage>` | `AWS/Lambda` `Errors`, `FunctionName=detection-<stage>`, Sum over 5 min | ≥ 1 error in one 5-minute period (no data counts as OK) | A detection run crashed or timed out. Check `aws logs tail /aws/lambda/detection-$STAGE --since 15m`. |
-| `simulator-down-<stage>` | `AWS/ECS` `CPUUtilization` SampleCount, cluster and service `simulator-<stage>`, 1 min | < 1 for 3 consecutive minutes (no data counts as down) | No simulator task is running, so no raw data is arriving. The ECS service normally replaces a stopped task by itself; if it does not, check the service events. |
+| `simulator-down-<stage>` | `ECS/ContainerInsights` `RunningTaskCount` Minimum, cluster and service `simulator-<stage>`, 1 min | < 1 for 3 consecutive minutes (no data counts as down) | No simulator task is running, so no raw data is arriving. The ECS service normally replaces a stopped task by itself; if it does not, check the service events. |
 
-A running Fargate task reports CPU every minute, so no datapoints means no task. The 3-minute window rides over the roughly one-minute gap of a normal simulator redeploy (the old task stops before the new one starts), so a deploy does not page the team.
+Container Insights is enabled on the `simulator-<stage>` cluster only (a few dollars a month per stage). It reports `RunningTaskCount` every minute, including an explicit 0 when no task runs. The plain `AWS/ECS` `CPUUtilization` metric was not used because it simply stops at 0 tasks, and CloudWatch evaluated that missing data about 11 minutes late in the live check. The 3-minute window rides over the roughly one-minute gap of a normal simulator redeploy (the old task stops before the new one starts), so a deploy does not page the team.
 
 **Simulator switch.** With `-c simulator=off` the simulator alarm's actions are disabled: it still goes to ALARM (no task is running) but sends nothing, so a deliberate stop does not page the team. The detection errors alarm stays enabled. The next deploy with `simulator=on` (or without the flag) re-enables the actions.
 

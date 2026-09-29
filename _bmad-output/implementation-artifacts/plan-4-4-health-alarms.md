@@ -9,7 +9,7 @@ route_source: 'auto'
 review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['edge-case-hunter', 'verification-gap']
-review_loop_iteration: 0
+review_loop_iteration: 1
 baseline_revision: 'c09f706bafb06b10b3d699e8ee91a0cb339dfb70'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-og-iiot-2026-09-28/ARCHITECTURE-SPINE.md'
@@ -30,13 +30,13 @@ context:
 - Topic `team-alarms-<stage>`. Its email subscriptions come only from a new CDK context `team_emails` (comma-separated), parsed and validated exactly like `operator_emails` (reuse the parser, generalised to take the context name). `sns:Subscribe` is denied to every principal except the deploy role, the same policy statement as the operator topic.
 - `cdk.json` sets `"team_emails": "operator@example.com"`: the only consultant address on record (owner said to proceed without them). It needs its own confirmation click.
 - Alarm `detection-errors-<stage>`: `AWS/Lambda` `Errors`, `FunctionName=detection-<stage>`, Sum over 300 s ≥ 1, 1 of 1 datapoints, missing data = not breaching.
-- Alarm `simulator-down-<stage>`: `AWS/ECS` `CPUUtilization` `SampleCount`, `ClusterName=simulator-<stage>`, `ServiceName=simulator-<stage>`, period 60 s, `< 1` for 3 of 3 datapoints, missing data = **breaching** (no running task means no datapoints). Three minutes rides over the ~1-minute gap of a simulator redeploy (stop-first).
+- Alarm `simulator-down-<stage>` (**owner decision 2026-09-29, after the live check: option A**): `ECS/ContainerInsights` `RunningTaskCount`, `ClusterName=simulator-<stage>`, `ServiceName=simulator-<stage>`, Minimum over 60 s `< 1` for 3 of 3 datapoints, missing data = breaching. Container Insights is enabled on the `simulator-<stage>` cluster (it emits an explicit 0 when no task runs). Three minutes rides over the ~1-minute gap of a simulator redeploy (stop-first).
 - Both alarms send their ALARM and OK actions to the team topic only. The detection function role gets no new permissions.
 - `-c simulator=off`: the simulator alarm's actions are disabled (`actions_enabled=False`), so a deliberate stop doesn't page the team. The errors alarm stays enabled.
 - Outputs: `TeamAlarmsTopicArn`.
 
 **Never:**
-- No alarm action or subscription on `operators-<stage>`. No Container Insights. No dashboards or other alarms. No change to the Lambda or the simulator code.
+- No alarm action or subscription on `operators-<stage>`. Container Insights only on the simulator cluster. No dashboards or other alarms. No change to the Lambda or the simulator code.
 
 ## I/O & Edge-Case Matrix
 
@@ -76,7 +76,11 @@ context:
 
 - Plan approved by the orchestrating session on 2026-09-29. The owner had said to proceed without them ("just do whatever needs to be done without me"), so there was no human checkpoint. The owner can revisit `team_emails` and the 3-minute simulator window.
 
+- Loopback 1 (Container Insights): a 10-line change re-derived from the amended plan. I reviewed its diff directly instead of running another lens pass, to save tokens given its size (owner's one-agent-at-a-time rule). 173 tests pass; synth exits 0.
+
 ## Plan Change Log
+
+- 2026-09-29, loopback after the live check (owner chose option A). **Finding:** `AWS/ECS` `CPUUtilization` `SampleCount` stops being emitted at 0 tasks, and CloudWatch evaluated the missing data about 11 minutes late: ALARM at 06:34:21Z for an outage from 06:22:54Z to about 06:31Z. **Amended:** the simulator alarm uses Container Insights `RunningTaskCount` (Minimum < 1, 3 of 3 × 60 s), with Container Insights enabled on the simulator cluster. **Known-bad state avoided:** an alarm that only fires after recovery. **KEEP:** the team topic, `team_emails` parsing, the errors alarm, the CloudWatch publish statement, the switch-off behaviour, and the SimulatorStack name cross-check test.
 
 - 2026-09-29 (build): the team topic also gets an `AllowCloudWatchAlarmsPublish` statement (`cloudwatch.amazonaws.com`, `sns:Publish`, `aws:SourceArn` like this account's `alarm:*`, `aws:SourceAccount`). An explicit topic policy replaces SNS's default one, so without it CloudWatch alarm actions could fail to publish. The deny-Subscribe statement is unchanged.
 - 2026-09-29 (build): the `cdk.json` `team_emails` edit was blocked by the session's permission classifier; the code, tests and docs are done, but `cdk.json` still has no `team_emails` until the owner adds it.

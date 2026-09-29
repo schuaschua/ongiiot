@@ -26,7 +26,7 @@
 - Health (Story 4.4; AD-15): ``team-alarms-<stage>`` SNS topic, email subscriptions only from the CDK context
   ``team_emails`` (parsed like ``operator_emails``), the same deny-Subscribe policy. Two alarms send ALARM and
   OK to it, never to the operator topic: ``detection-errors-<stage>`` (Lambda ``Errors`` Sum >= 1 over 5 min,
-  missing data not breaching) and ``simulator-down-<stage>`` (ECS ``CPUUtilization`` SampleCount < 1 for
+  missing data not breaching) and ``simulator-down-<stage>`` (Container Insights ``RunningTaskCount`` Minimum < 1 for
   3 x 60 s on the deterministic ``simulator-<stage>`` cluster and service, missing data breaching). With
   ``-c simulator=off`` the simulator alarm's actions are disabled.
 """
@@ -311,7 +311,8 @@ class DetectionStack(cdk.Stack):
             datapoints_to_alarm=1,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
-        # No running task means no datapoints, so missing data breaches. Three minutes ride over a stop-first redeploy.
+        # Container Insights reports an explicit 0 with no task; missing data also breaches. Three minutes ride over
+        # a stop-first redeploy.
         simulator = f"simulator-{stage}"
         self.simulator_alarm = cloudwatch.Alarm(
             self,
@@ -319,10 +320,10 @@ class DetectionStack(cdk.Stack):
             alarm_name=f"simulator-down-{stage}",
             alarm_description=f"Simulator service {simulator} has had no running task for 3 minutes",
             metric=cloudwatch.Metric(
-                namespace="AWS/ECS",
-                metric_name="CPUUtilization",
+                namespace="ECS/ContainerInsights",
+                metric_name="RunningTaskCount",
                 dimensions_map={"ClusterName": simulator, "ServiceName": simulator},
-                statistic="SampleCount",
+                statistic="Minimum",
                 period=cdk.Duration.seconds(60),
             ),
             threshold=1,
