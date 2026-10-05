@@ -120,6 +120,7 @@ Pushed 2026-09-28 to https://example.atlassian.net, project `OG`. Keep this tabl
 | Bug: simulator stop mid-window emails every pipe | OG-26 | Done (PR #20) |
 | Task: close documentation gaps after the POC build | OG-27 | Done (PR #24) |
 | Task: alert the team when detection stops running | OG-28 | Done (PR #25) |
+| Task: publish the repo publicly with a cleaned history | OG-29 | Done (history rewritten 2026-10-05; PR numbers above refer to the private archive) |
 
 ## Epic List
 
